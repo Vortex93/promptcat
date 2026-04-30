@@ -12,7 +12,7 @@ import (
 	"strings"
 )
 
-var version = "1.0.0"
+var version = "0.1.0"
 var buildDate = "dev"
 
 var binaryExtensions = map[string]bool{
