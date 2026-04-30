@@ -1,0 +1,27 @@
+version: "3"
+
+tasks:
+    # General
+    default:
+        desc: List all available tasks
+        cmds:
+            - task --list
+
+    promptcat:install:
+        desc: Build and install promptcat into ~/go/bin or %USERPROFILE%\go\bin
+        dir: "{{.TASKFILE_DIR}}/go"
+        vars:
+            BUILD_DATE: '{{now | date "20060102"}}'
+        cmds:
+            - cmd: |
+                  mkdir -p '{{.HOME}}/go/bin'
+                  go build -ldflags '-X main.buildDate={{.BUILD_DATE}}' -o '{{.HOME}}/go/bin/promptcat' ./cmd/promptcat
+                  chmod +x '{{.HOME}}/go/bin/promptcat'
+                  '{{.HOME}}/go/bin/promptcat' --version
+              platforms: [linux, darwin]
+
+            - cmd: |
+                  mkdir -p '{{default .HOME .USERPROFILE | toSlash}}/go/bin'
+                  go build -ldflags '-X main.buildDate={{.BUILD_DATE}}' -o '{{default .HOME .USERPROFILE | toSlash}}/go/bin/promptcat.exe' ./cmd/promptcat
+                  '{{default .HOME .USERPROFILE | toSlash}}/go/bin/promptcat.exe' --version
+              platforms: [windows]
