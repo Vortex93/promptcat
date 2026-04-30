@@ -206,3 +206,7 @@ Continuous integration runs the build and test workflow on Windows, macOS, and L
 ## Contributing
 
 Guidelines live in [`CONTRIBUTING.md`](./CONTRIBUTING.md).
+
+## License
+
+This project is licensed under the [MIT License](./LICENSE).
