@@ -203,7 +203,7 @@ func flagError(message string) error {
 }
 
 func usage() string {
-	return `promptcat - concatenate source files for prompts
+	return `promptcat - concatenate text and source files for AI prompts
 
 Usage:
   promptcat [options] <files...>
@@ -212,9 +212,9 @@ Options:
   --help, -h            Show help
   --version, -v         Show version
   --fullpath            Output absolute file paths
-  --include=ts,js       Include only specific extensions
+  --include=go,md       Include only specific extensions
   --exclude=json        Exclude extensions
-  --ignore-dir=name     Ignore directories
+  --ignore-dir=name     Ignore directories by name
 
 Output format:
   <<<FILE: path/to/file>>>
@@ -222,8 +222,8 @@ Output format:
   <<<END FILE>>>
 
 Examples:
-  promptcat src/**/*.ts
-  promptcat --include=ts,js src/**
+  promptcat "cmd/**/*.go"
+  promptcat --include=go,md --ignore-dir=.git,node_modules "**/*"
 `
 }
 
@@ -247,6 +247,12 @@ func globToRegex(pattern string) (*regexp.Regexp, error) {
 
 		if char == '*' {
 			if i+1 < len(pattern) && pattern[i+1] == '*' {
+				if i+2 < len(pattern) && pattern[i+2] == '/' {
+					builder.WriteString("(?:[^/]+/)*")
+					i += 2
+					continue
+				}
+
 				builder.WriteString(".*")
 				i++
 				continue
@@ -369,6 +375,8 @@ func writeFileBlock(output *bytes.Buffer, path string, data []byte) {
 func main() {
 	opts, err := parseArgs(os.Args[1:])
 	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		fmt.Fprintln(os.Stderr)
 		fmt.Fprintln(os.Stderr, usage())
 		os.Exit(1)
 	}
