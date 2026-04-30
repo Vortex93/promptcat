@@ -191,6 +191,7 @@ The repository includes a small `Taskfile` for local workflows.
 task build
 task test
 task install
+task release VERSION=0.1.0
 ```
 
 Direct Go commands work as well:
@@ -202,6 +203,15 @@ go install ./cmd/promptcat
 ```
 
 Continuous integration runs the build and test workflow on Windows, macOS, and Linux.
+
+To publish a new GitHub release, push a semantic version tag:
+
+```bash
+task release VERSION=0.1.0
+```
+
+That task runs tests, creates the `v0.1.0` tag, and pushes it to GitHub.
+The GitHub Actions release workflow then builds the binaries and publishes the release assets from GitHub-hosted runners.
 
 ## Contributing
 
