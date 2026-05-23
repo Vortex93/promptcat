@@ -152,11 +152,10 @@ func parseArgs(args []string) (options, error) {
 			opts.exclude = parseExts(args[i])
 
 		case arg == "--ignore-dir":
-			i++
-			if i >= len(args) {
-				return opts, flagError("missing value for --ignore-dir")
+			if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
+				i++
+				opts.ignoredDirs = parseDirs(args[i])
 			}
-			opts.ignoredDirs = parseDirs(args[i])
 
 		case strings.HasPrefix(arg, "--include="):
 			opts.include = parseExts(strings.TrimPrefix(arg, "--include="))
