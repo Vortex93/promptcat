@@ -63,7 +63,7 @@ func parseDirs(s string) map[string]bool {
 	for _, d := range strings.Split(s, ",") {
 		d = strings.TrimSpace(d)
 		if d != "" {
-			set[d] = true
+			set[strings.ToLower(d)] = true
 		}
 	}
 
@@ -78,7 +78,7 @@ func isIgnored(path string, ignored map[string]bool) bool {
 	parts := strings.Split(filepath.ToSlash(path), "/")
 
 	for _, p := range parts {
-		if ignored[p] {
+		if ignored[strings.ToLower(p)] {
 			return true
 		}
 	}
@@ -152,11 +152,10 @@ func parseArgs(args []string) (options, error) {
 			opts.exclude = parseExts(args[i])
 
 		case arg == "--ignore-dir":
-			i++
-			if i >= len(args) {
-				return opts, flagError("missing value for --ignore-dir")
+			if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
+				i++
+				opts.ignoredDirs = parseDirs(args[i])
 			}
-			opts.ignoredDirs = parseDirs(args[i])
 
 		case strings.HasPrefix(arg, "--include="):
 			opts.include = parseExts(strings.TrimPrefix(arg, "--include="))
@@ -298,7 +297,7 @@ func globRoot(pattern string) string {
 	return filepath.FromSlash(strings.Join(rootParts, "/"))
 }
 
-func expandInput(input string) []string {
+func expandInput(input string, ignoredDirs map[string]bool) []string {
 	if !hasGlob(input) {
 		return []string{input}
 	}
@@ -323,6 +322,9 @@ func expandInput(input string) []string {
 		}
 
 		if d.IsDir() {
+			if ignoredDirs != nil && ignoredDirs[strings.ToLower(d.Name())] {
+				return filepath.SkipDir
+			}
 			return nil
 		}
 
@@ -341,12 +343,12 @@ func expandInput(input string) []string {
 	return matches
 }
 
-func expandInputs(inputs []string) []string {
+func expandInputs(inputs []string, ignoredDirs map[string]bool) []string {
 	expanded := make([]string, 0, len(inputs))
 	seen := map[string]bool{}
 
 	for _, input := range inputs {
-		for _, match := range expandInput(input) {
+		for _, match := range expandInput(input, ignoredDirs) {
 			if seen[match] {
 				continue
 			}
@@ -381,7 +383,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	args := expandInputs(opts.inputs)
+	args := expandInputs(opts.inputs, opts.ignoredDirs)
 
 	if len(args) == 0 {
 		fmt.Fprintln(os.Stderr, usage())
