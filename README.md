@@ -86,18 +86,18 @@ cd promptcat
 go test ./...
 ```
 
-Build the binary locally:
+Build the binary locally into `bin/`:
 
 macOS and Linux:
 
 ```bash
-go build -o promptcat ./cmd/promptcat
+go build -o bin/promptcat ./cmd/promptcat
 ```
 
 Windows:
 
 ```powershell
-go build -o promptcat.exe ./cmd/promptcat
+go build -o bin/promptcat.exe ./cmd/promptcat
 ```
 
 ## Quick Start

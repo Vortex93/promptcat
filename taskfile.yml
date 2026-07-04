@@ -7,11 +7,15 @@ tasks:
       - task --list-all
 
   build:
-    desc: Build promptcat in the repository root
+    desc: Build promptcat into ./bin
     cmds:
-      - cmd: go build -o promptcat ./cmd/promptcat
+      - cmd: mkdir -p bin
         platforms: [linux, darwin]
-      - cmd: go build -o promptcat.exe ./cmd/promptcat
+      - cmd: powershell -NoProfile -ExecutionPolicy Bypass -Command "New-Item -ItemType Directory -Force -Path bin | Out-Null"
+        platforms: [windows]
+      - cmd: go build -o bin/promptcat ./cmd/promptcat
+        platforms: [linux, darwin]
+      - cmd: go build -o bin/promptcat.exe ./cmd/promptcat
         platforms: [windows]
 
   test:
