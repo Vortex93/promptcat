@@ -159,6 +159,8 @@ Notes:
 
 Quote glob patterns so `promptcat` expands them itself instead of letting your shell do it first.
 That keeps behavior more consistent across Bash, Zsh, Fish, PowerShell, and `cmd.exe`.
+Supported syntax includes `*`, `**`, `?`, and character classes such as `[ab]`, `[a-z]`, and `[!a]`.
+Absolute glob paths are supported.
 
 Recommended forms:
 

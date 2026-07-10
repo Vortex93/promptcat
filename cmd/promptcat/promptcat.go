@@ -264,7 +264,30 @@ func globToRegex(pattern string) (*regexp.Regexp, error) {
 		switch char {
 		case '?':
 			builder.WriteString("[^/]")
-		case '.', '(', ')', '+', '|', '^', '$', '{', '}', '[', ']', '\\':
+		case '[':
+			end := strings.IndexByte(pattern[i+1:], ']')
+			if end < 0 {
+				return nil, fmt.Errorf("unterminated character class")
+			}
+
+			end += i + 1
+			characterClass := pattern[i+1 : end]
+			if characterClass == "" {
+				return nil, fmt.Errorf("empty character class")
+			}
+
+			builder.WriteByte('[')
+			if characterClass[0] == '!' {
+				builder.WriteByte('^')
+				characterClass = characterClass[1:]
+			}
+			if characterClass == "" {
+				return nil, fmt.Errorf("empty character class")
+			}
+			builder.WriteString(characterClass)
+			builder.WriteByte(']')
+			i = end
+		case '.', '(', ')', '+', '|', '^', '$', '{', '}', ']', '\\':
 			builder.WriteByte('\\')
 			builder.WriteByte(char)
 		default:
@@ -278,7 +301,14 @@ func globToRegex(pattern string) (*regexp.Regexp, error) {
 }
 
 func globRoot(pattern string) string {
-	parts := strings.Split(filepath.ToSlash(pattern), "/")
+	slashPattern := filepath.ToSlash(pattern)
+	rootPrefix := ""
+	if filepath.IsAbs(pattern) {
+		rootPrefix = filepath.ToSlash(filepath.VolumeName(pattern)) + "/"
+		slashPattern = strings.TrimPrefix(slashPattern, rootPrefix)
+	}
+
+	parts := strings.Split(slashPattern, "/")
 	rootParts := make([]string, 0, len(parts))
 
 	for _, part := range parts {
@@ -291,10 +321,19 @@ func globRoot(pattern string) string {
 	}
 
 	if len(rootParts) == 0 {
+		if rootPrefix != "" {
+			return filepath.FromSlash(rootPrefix)
+		}
+
 		return "."
 	}
 
-	return filepath.FromSlash(strings.Join(rootParts, "/"))
+	root := filepath.FromSlash(strings.Join(rootParts, "/"))
+	if rootPrefix == "" {
+		return root
+	}
+
+	return filepath.Join(filepath.FromSlash(rootPrefix), root)
 }
 
 func expandInput(input string, ignoredDirs map[string]bool) []string {
