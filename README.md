@@ -1,5 +1,9 @@
 # promptcat
 
+<p align="center">
+    <img src="./assets/promptcat-logo.png" alt="promptcat logo" width="180">
+</p>
+
 [![CI](https://github.com/Vortex93/promptcat/actions/workflows/ci.yml/badge.svg)](https://github.com/Vortex93/promptcat/actions/workflows/ci.yml)
 
 `promptcat` turns a set of source or text files into one prompt-friendly document.
