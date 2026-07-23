@@ -112,11 +112,12 @@ func isProbablyText(data []byte) bool {
 }
 
 type options struct {
-	fullPath    bool
-	include     map[string]bool
-	exclude     map[string]bool
-	ignoredDirs map[string]bool
-	inputs      []string
+	fullPath        bool
+	include         map[string]bool
+	exclude         map[string]bool
+	ignoredDirs     map[string]bool
+	inputs          []string
+	excludePatterns []string
 }
 
 func parseArgs(args []string) (options, error) {
@@ -189,9 +190,23 @@ func parseArgs(args []string) (options, error) {
 			}
 			opts.fullPath = value
 
+		case strings.HasPrefix(arg, "!"):
+			pattern := strings.TrimPrefix(arg, "!")
+			if pattern == "" {
+				return opts, flagError("empty exclusion pattern")
+			}
+			if _, err := globToRegex(pattern); err != nil {
+				return opts, flagError(fmt.Sprintf("invalid exclusion pattern %q: %v", pattern, err))
+			}
+			opts.excludePatterns = append(opts.excludePatterns, pattern)
+
 		default:
 			opts.inputs = append(opts.inputs, arg)
 		}
+	}
+
+	if len(opts.inputs) == 0 && len(opts.excludePatterns) > 0 {
+		return opts, flagError("at least one file path or glob pattern is required")
 	}
 
 	return opts, nil
@@ -214,6 +229,7 @@ Options:
   --include=go,md       Include only specific extensions
   --exclude=json        Exclude extensions
   --ignore-dir=name     Ignore directories by name
+  !pattern              Exclude files matching a glob pattern
 
 Output format:
   <<<FILE: path/to/file>>>
@@ -222,6 +238,7 @@ Output format:
 
 Examples:
   promptcat "cmd/**/*.go"
+  promptcat "**/*.md" "!**/excluded/*.md"
   promptcat --include=go,md --ignore-dir=.git,node_modules "**/*"
 `
 }
@@ -382,12 +399,24 @@ func expandInput(input string, ignoredDirs map[string]bool) []string {
 	return matches
 }
 
-func expandInputs(inputs []string, ignoredDirs map[string]bool) []string {
+func expandInputs(inputs, excludePatterns []string, ignoredDirs map[string]bool) ([]string, error) {
+	excludeMatchers := make([]*regexp.Regexp, 0, len(excludePatterns))
+	for _, pattern := range excludePatterns {
+		matcher, err := globToRegex(pattern)
+		if err != nil {
+			return nil, err
+		}
+		excludeMatchers = append(excludeMatchers, matcher)
+	}
+
 	expanded := make([]string, 0, len(inputs))
 	seen := map[string]bool{}
 
 	for _, input := range inputs {
 		for _, match := range expandInput(input, ignoredDirs) {
+			if matchesAnyPattern(trimDotSlash(filepath.ToSlash(match)), excludeMatchers) {
+				continue
+			}
 			if seen[match] {
 				continue
 			}
@@ -397,7 +426,17 @@ func expandInputs(inputs []string, ignoredDirs map[string]bool) []string {
 		}
 	}
 
-	return expanded
+	return expanded, nil
+}
+
+func matchesAnyPattern(path string, matchers []*regexp.Regexp) bool {
+	for _, matcher := range matchers {
+		if matcher.MatchString(path) {
+			return true
+		}
+	}
+
+	return false
 }
 
 func writeFileBlock(output *bytes.Buffer, path string, data []byte) {
@@ -422,7 +461,11 @@ func main() {
 		os.Exit(1)
 	}
 
-	args := expandInputs(opts.inputs, opts.ignoredDirs)
+	args, err := expandInputs(opts.inputs, opts.excludePatterns, opts.ignoredDirs)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to expand inputs: %v\n", err)
+		os.Exit(1)
+	}
 
 	if len(args) == 0 {
 		fmt.Fprintln(os.Stderr, usage())

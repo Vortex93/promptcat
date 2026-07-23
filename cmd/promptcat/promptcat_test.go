@@ -17,6 +17,7 @@ func TestParseArgsParsesFlagsAndInputs(t *testing.T) {
 		"--ignore-dir=.git,node_modules",
 		"README.md",
 		"cmd/**/*.go",
+		"!**/generated/**",
 	})
 	if err != nil {
 		t.Fatalf("parseArgs returned error: %v", err)
@@ -40,6 +41,18 @@ func TestParseArgsParsesFlagsAndInputs(t *testing.T) {
 
 	if !reflect.DeepEqual(opts.inputs, []string{"README.md", "cmd/**/*.go"}) {
 		t.Fatalf("unexpected inputs: %#v", opts.inputs)
+	}
+
+	if !reflect.DeepEqual(opts.excludePatterns, []string{"**/generated/**"}) {
+		t.Fatalf("unexpected exclusion patterns: %#v", opts.excludePatterns)
+	}
+}
+
+func TestParseArgsRejectsEmptyOrExclusionOnlyPatterns(t *testing.T) {
+	for _, args := range [][]string{{"!"}, {"!**/excluded/**"}} {
+		if _, err := parseArgs(args); err == nil {
+			t.Fatalf("parseArgs(%#v) returned nil error", args)
+		}
 	}
 }
 
@@ -124,6 +137,33 @@ func TestExpandInputMatchesAbsoluteGlob(t *testing.T) {
 	got := expandInput(filepath.Join(tempDir, "*.txt"), nil)
 	if !reflect.DeepEqual(got, paths) {
 		t.Fatalf("expandInput returned %#v, want %#v", got, paths)
+	}
+}
+
+func TestExpandInputsExcludesMatchingPatterns(t *testing.T) {
+	root := t.TempDir()
+	writeFile := func(path string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("content"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	writeFile(filepath.Join(root, "keep.md"))
+	writeFile(filepath.Join(root, "excluded", "drop.md"))
+	writeFile(filepath.Join(root, "nested", "excluded", "drop.md"))
+
+	got, err := expandInputs([]string{filepath.Join(root, "**", "*.md")}, []string{filepath.Join(root, "**", "excluded", "*.md")}, nil)
+	if err != nil {
+		t.Fatalf("expandInputs returned error: %v", err)
+	}
+
+	want := []string{filepath.Join(root, "keep.md")}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("expandInputs = %#v, want %#v", got, want)
 	}
 }
 

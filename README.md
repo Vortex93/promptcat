@@ -149,6 +149,7 @@ Directories passed directly are skipped.
 | `--include=go,md` | Include only these extensions |
 | `--exclude=json,lock` | Exclude these extensions |
 | `--ignore-dir=.git,node_modules` | Skip files whose path contains any of these directory names |
+| `!pattern` | Exclude files matching this glob pattern |
 
 Notes:
 - Extensions can be written with or without a leading dot
@@ -170,6 +171,13 @@ Recommended forms:
 
 Prefer forward slashes in patterns even on Windows.
 Examples such as `cmd/**/*.go` work across platforms.
+
+Use a quoted `!pattern` to remove matching files. `--exclude` filters file extensions; `!pattern` filters paths:
+
+```bash
+promptcat "**/*.md" "!**/excluded/*.md"
+promptcat "**/*" "!**/generated/**" "!**/vendor/**"
+```
 
 Supported pattern features:
 
