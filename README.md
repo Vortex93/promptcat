@@ -130,6 +130,12 @@ Write the result to a file you can paste elsewhere:
 promptcat --include=go,md README.md "cmd/**/*.go" > prompt.txt
 ```
 
+Auto-detect project files:
+
+```bash
+promptcat auto > prompt.txt
+```
+
 ## Usage
 
 ```text
@@ -150,11 +156,20 @@ Directories passed directly are skipped.
 | `--exclude=json,lock` | Exclude these extensions |
 | `--ignore-dir=.git,node_modules` | Skip files whose path contains any of these directory names |
 | `!pattern` | Exclude files matching this glob pattern |
+| `auto` | Detect project stacks and select relevant files from current directory |
 
 Notes:
 - Extensions can be written with or without a leading dot
 - `--include`, `--exclude`, and `--ignore-dir` accept comma-separated values
 - Binary files are skipped automatically
+- `auto` cannot be combined with explicit file paths or glob patterns
+- `!pattern` exclusions apply after all positive paths and glob patterns expand
+
+### Auto Mode
+
+`promptcat auto` detects mixed projects and selects source files, relevant manifests/configuration, root documentation, and GitHub Actions workflows. It supports Go; JavaScript, TypeScript, React, Vue, Svelte, Angular, Astro, and Nuxt; Python; Rust; Java and Kotlin; C#; Ruby; PHP; Swift; Dart/Flutter; Elixir; shell; Docker/Compose; and Terraform/HCL.
+
+Auto mode skips lockfiles and common generated or dependency folders including `.git`, `node_modules`, `vendor`, `dist`, `build`, `coverage`, `target`, `.next`, `.nuxt`, `.svelte-kit`, and `.cache`. Use `--include`, `--exclude`, or `--ignore-dir` to narrow its selection further.
 
 ## Globs and Shells
 

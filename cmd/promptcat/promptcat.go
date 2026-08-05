@@ -112,6 +112,7 @@ func isProbablyText(data []byte) bool {
 }
 
 type options struct {
+	auto            bool
 	fullPath        bool
 	include         map[string]bool
 	exclude         map[string]bool
@@ -134,6 +135,9 @@ func parseArgs(args []string) (options, error) {
 		case arg == "-v" || arg == "--version":
 			fmt.Printf("promptcat %s (%s)\n", version, buildDate)
 			os.Exit(0)
+
+		case arg == "auto":
+			opts.auto = true
 
 		case arg == "--fullpath" || arg == "fullpath":
 			opts.fullPath = true
@@ -205,7 +209,10 @@ func parseArgs(args []string) (options, error) {
 		}
 	}
 
-	if len(opts.inputs) == 0 && len(opts.excludePatterns) > 0 {
+	if opts.auto && len(opts.inputs) > 0 {
+		return opts, flagError("auto cannot be combined with explicit files or glob patterns")
+	}
+	if !opts.auto && len(opts.inputs) == 0 && len(opts.excludePatterns) > 0 {
 		return opts, flagError("at least one file path or glob pattern is required")
 	}
 
@@ -221,6 +228,7 @@ func usage() string {
 
 Usage:
   promptcat [options] <files...>
+  promptcat auto [options]
 
 Options:
   --help, -h            Show help
@@ -228,7 +236,7 @@ Options:
   --fullpath            Output absolute file paths
   --include=go,md       Include only specific extensions
   --exclude=json        Exclude extensions
-  --ignore-dir=name     Ignore directories by name
+	--ignore-dir=name     Ignore directories by name
   !pattern              Exclude files matching a glob pattern
 
 Output format:
@@ -240,6 +248,7 @@ Examples:
   promptcat "cmd/**/*.go"
   promptcat "**/*.md" "!**/excluded/*.md"
   promptcat --include=go,md --ignore-dir=.git,node_modules "**/*"
+  promptcat auto
 `
 }
 
@@ -461,10 +470,19 @@ func main() {
 		os.Exit(1)
 	}
 
-	args, err := expandInputs(opts.inputs, opts.excludePatterns, opts.ignoredDirs)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to expand inputs: %v\n", err)
-		os.Exit(1)
+	var args []string
+	if opts.auto {
+		args, err = selectAutoFiles(".", opts.ignoredDirs)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Auto detection failed: %v\n", err)
+			os.Exit(1)
+		}
+	} else {
+		args, err = expandInputs(opts.inputs, opts.excludePatterns, opts.ignoredDirs)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to expand inputs: %v\n", err)
+			os.Exit(1)
+		}
 	}
 
 	if len(args) == 0 {
