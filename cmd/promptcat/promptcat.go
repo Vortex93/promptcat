@@ -1,8 +1,10 @@
 package main
 
 import (
-	"bytes"
+	"bufio"
+	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -12,7 +14,7 @@ import (
 	"strings"
 )
 
-var version = "0.1.0"
+var version = "0.1.1"
 var buildDate = "dev"
 
 var binaryExtensions = map[string]bool{
@@ -29,6 +31,8 @@ const (
 	fileStartMarkerSuffix = ">>>"
 	fileEndMarker         = "<<<END FILE>>>"
 )
+
+var errBinaryContent = errors.New("binary content")
 
 func parseExts(exts string) map[string]bool {
 	if exts == "" {
@@ -367,44 +371,7 @@ func expandInput(input string, ignoredDirs map[string]bool) []string {
 		return []string{input}
 	}
 
-	matcher, err := globToRegex(input)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Skipping (bad pattern): %s\n", input)
-		return nil
-	}
-
-	root := globRoot(input)
-	info, err := os.Stat(root)
-	if err != nil || !info.IsDir() {
-		fmt.Fprintf(os.Stderr, "Skipping (glob root not found): %s\n", input)
-		return nil
-	}
-
-	matches := make([]string, 0)
-	err = filepath.WalkDir(root, func(path string, d fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return nil
-		}
-
-		if d.IsDir() {
-			if ignoredDirs != nil && ignoredDirs[strings.ToLower(d.Name())] {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-
-		if matcher.MatchString(trimDotSlash(path)) {
-			matches = append(matches, path)
-		}
-
-		return nil
-	})
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Skipping (walk error): %s\n", input)
-		return nil
-	}
-
-	sort.Strings(matches)
+	matches, _ := expandInputs([]string{input}, nil, ignoredDirs)
 	return matches
 }
 
@@ -418,20 +385,86 @@ func expandInputs(inputs, excludePatterns []string, ignoredDirs map[string]bool)
 		excludeMatchers = append(excludeMatchers, matcher)
 	}
 
+	type globInput struct {
+		input   string
+		matcher *regexp.Regexp
+		root    string
+	}
+
+	globInputs := make([]globInput, 0, len(inputs))
+	for _, input := range inputs {
+		if !hasGlob(input) {
+			continue
+		}
+
+		matcher, err := globToRegex(input)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Skipping (bad pattern): %s\n", input)
+			continue
+		}
+		globInputs = append(globInputs, globInput{input: input, matcher: matcher, root: globRoot(input)})
+	}
+
+	matchesByInput := make(map[string][]string, len(globInputs))
+	byRoot := make(map[string][]int)
+	for i, input := range globInputs {
+		byRoot[input.root] = append(byRoot[input.root], i)
+	}
+
+	for root, indexes := range byRoot {
+		info, err := os.Stat(root)
+		if err != nil || !info.IsDir() {
+			for _, index := range indexes {
+				fmt.Fprintf(os.Stderr, "Skipping (glob root not found): %s\n", globInputs[index].input)
+			}
+			continue
+		}
+
+		err = filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
+			if walkErr != nil {
+				return nil
+			}
+			if entry.IsDir() {
+				if ignoredDirs != nil && ignoredDirs[strings.ToLower(entry.Name())] {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+
+			trimmedPath := trimDotSlash(path)
+			for _, index := range indexes {
+				if globInputs[index].matcher.MatchString(trimmedPath) {
+					input := globInputs[index].input
+					matchesByInput[input] = append(matchesByInput[input], path)
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			for _, index := range indexes {
+				fmt.Fprintf(os.Stderr, "Skipping (walk error): %s\n", globInputs[index].input)
+			}
+		}
+	}
+
 	expanded := make([]string, 0, len(inputs))
 	seen := map[string]bool{}
-
+	appendMatch := func(match string) {
+		if matchesAnyPattern(trimDotSlash(filepath.ToSlash(match)), excludeMatchers) || seen[match] {
+			return
+		}
+		seen[match] = true
+		expanded = append(expanded, match)
+	}
 	for _, input := range inputs {
-		for _, match := range expandInput(input, ignoredDirs) {
-			if matchesAnyPattern(trimDotSlash(filepath.ToSlash(match)), excludeMatchers) {
-				continue
-			}
-			if seen[match] {
-				continue
-			}
-
-			seen[match] = true
-			expanded = append(expanded, match)
+		if !hasGlob(input) {
+			appendMatch(input)
+			continue
+		}
+		matches := matchesByInput[input]
+		sort.Strings(matches)
+		for _, match := range matches {
+			appendMatch(match)
 		}
 	}
 
@@ -448,17 +481,113 @@ func matchesAnyPattern(path string, matchers []*regexp.Regexp) bool {
 	return false
 }
 
-func writeFileBlock(output *bytes.Buffer, path string, data []byte) {
-	output.WriteString(fileStartMarkerPrefix)
-	output.WriteString(filepath.ToSlash(path))
-	output.WriteString(fileStartMarkerSuffix)
-	output.WriteString("\n")
+type trimTrailingNewlinesWriter struct {
+	writer  io.Writer
+	pending int
+}
 
-	output.Write(bytes.TrimRight(data, "\n"))
-	output.WriteString("\n")
+func (w *trimTrailingNewlinesWriter) Write(data []byte) (int, error) {
+	start := 0
+	for i, b := range data {
+		if b == '\n' {
+			if start < i {
+				if err := w.flush(data[start:i]); err != nil {
+					return 0, err
+				}
+			}
+			w.pending++
+			start = i + 1
+			continue
+		}
 
-	output.WriteString(fileEndMarker)
-	output.WriteString("\n\n")
+		if w.pending > 0 {
+			if err := w.flushNewlines(); err != nil {
+				return 0, err
+			}
+		}
+	}
+	if w.pending == 0 && start < len(data) {
+		if err := w.flush(data[start:]); err != nil {
+			return 0, err
+		}
+	}
+	return len(data), nil
+}
+
+func (w *trimTrailingNewlinesWriter) flush(data []byte) error {
+	n, err := w.writer.Write(data)
+	if err != nil {
+		return err
+	}
+	if n != len(data) {
+		return io.ErrShortWrite
+	}
+	return nil
+}
+
+func (w *trimTrailingNewlinesWriter) flushNewlines() error {
+	var newlines [256]byte
+	for i := range newlines {
+		newlines[i] = '\n'
+	}
+	for w.pending > 0 {
+		n := w.pending
+		if n > len(newlines) {
+			n = len(newlines)
+		}
+		if err := w.flush(newlines[:n]); err != nil {
+			return err
+		}
+		w.pending -= n
+	}
+	return nil
+}
+
+func (w *trimTrailingNewlinesWriter) finish() error {
+	return w.flush([]byte("\n"))
+}
+
+func writeFileBlock(output io.Writer, path string, data []byte) error {
+	if _, err := fmt.Fprintf(output, "%s%s%s\n", fileStartMarkerPrefix, filepath.ToSlash(path), fileStartMarkerSuffix); err != nil {
+		return err
+	}
+	content := &trimTrailingNewlinesWriter{writer: output}
+	if _, err := content.Write(data); err != nil {
+		return err
+	}
+	if err := content.finish(); err != nil {
+		return err
+	}
+	_, err := fmt.Fprintf(output, "%s\n\n", fileEndMarker)
+	return err
+}
+
+func writeFileBlockFromFile(output io.Writer, path string, file *os.File) error {
+	const sampleSize = 8000
+	sample := make([]byte, sampleSize)
+	n, err := io.ReadFull(file, sample)
+	if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
+		return err
+	}
+	if !isProbablyText(sample[:n]) {
+		return errBinaryContent
+	}
+	if _, err := fmt.Fprintf(output, "%s%s%s\n", fileStartMarkerPrefix, filepath.ToSlash(path), fileStartMarkerSuffix); err != nil {
+		return err
+	}
+
+	content := &trimTrailingNewlinesWriter{writer: output}
+	if _, err := content.Write(sample[:n]); err != nil {
+		return err
+	}
+	if _, err := io.Copy(content, file); err != nil {
+		return err
+	}
+	if err := content.finish(); err != nil {
+		return err
+	}
+	_, err = fmt.Fprintf(output, "%s\n\n", fileEndMarker)
+	return err
 }
 
 func main() {
@@ -490,7 +619,8 @@ func main() {
 		os.Exit(1)
 	}
 
-	var output bytes.Buffer
+	output := bufio.NewWriter(os.Stdout)
+	defer output.Flush()
 
 	for _, input := range args {
 		if isIgnored(input, opts.ignoredDirs) {
@@ -526,14 +656,9 @@ func main() {
 			continue
 		}
 
-		data, err := os.ReadFile(input)
+		file, err := os.Open(input)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Skipping (read error): %s\n", input)
-			continue
-		}
-
-		if !isProbablyText(data) {
-			fmt.Fprintf(os.Stderr, "Skipping (binary content): %s\n", input)
 			continue
 		}
 
@@ -545,8 +670,14 @@ func main() {
 			}
 		}
 
-		writeFileBlock(&output, path, data)
+		err = writeFileBlockFromFile(output, path, file)
+		file.Close()
+		if err != nil {
+			if errors.Is(err, errBinaryContent) {
+				fmt.Fprintf(os.Stderr, "Skipping (binary content): %s\n", input)
+			} else {
+				fmt.Fprintf(os.Stderr, "Skipping (read error): %s\n", input)
+			}
+		}
 	}
-
-	fmt.Print(output.String())
 }

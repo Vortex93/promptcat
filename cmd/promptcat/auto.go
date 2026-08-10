@@ -22,6 +22,13 @@ type autoFile struct {
 	ext  string
 }
 
+type autoStackIndex struct {
+	activationByExt  map[string][]string
+	activationByName map[string][]string
+	matchingByExt    map[string][]string
+	matchingByName   map[string][]string
+}
+
 var autoIgnoredDirs = map[string]bool{
 	".astro": true, ".cache": true, ".git": true, ".next": true, ".nuxt": true,
 	".svelte-kit": true, ".turbo": true, "bin": true, "build": true, "coverage": true,
@@ -126,6 +133,36 @@ var autoStacks = map[string]autoStack{
 	},
 }
 
+var autoIndex = buildAutoStackIndex()
+
+func buildAutoStackIndex() autoStackIndex {
+	index := autoStackIndex{
+		activationByExt:  make(map[string][]string),
+		activationByName: make(map[string][]string),
+		matchingByExt:    make(map[string][]string),
+		matchingByName:   make(map[string][]string),
+	}
+	for name, stack := range autoStacks {
+		for marker := range stack.markers {
+			index.activationByName[marker] = append(index.activationByName[marker], name)
+		}
+		activationExtensions := stack.detectExtensions
+		if activationExtensions == nil {
+			activationExtensions = stack.sourceExtensions
+		}
+		for extension := range activationExtensions {
+			index.activationByExt[extension] = append(index.activationByExt[extension], name)
+		}
+		for extension := range stack.sourceExtensions {
+			index.matchingByExt[extension] = append(index.matchingByExt[extension], name)
+		}
+		for configName := range stack.configNames {
+			index.matchingByName[configName] = append(index.matchingByName[configName], name)
+		}
+	}
+	return index
+}
+
 func autoSet(values ...string) map[string]bool {
 	set := make(map[string]bool, len(values))
 	for _, value := range values {
@@ -153,7 +190,7 @@ func selectAutoFiles(root string, ignoredDirs map[string]bool) ([]string, error)
 		name := strings.ToLower(entry.Name())
 		file := autoFile{path: path, name: name, ext: strings.ToLower(filepath.Ext(name))}
 		files = append(files, file)
-		activateStacksForFile(file, activeStacks)
+		activateStacksForFile(file, activeStacks, autoIndex)
 		if name == "package.json" {
 			activatePackageStacks(path, activeStacks)
 		}
@@ -170,7 +207,7 @@ func selectAutoFiles(root string, ignoredDirs map[string]bool) ([]string, error)
 			continue
 		}
 
-		if isAutoCommonFile(root, file.path) || matchesAutoStack(file, activeStacks) {
+		if isAutoCommonFile(root, file.path) || matchesAutoStack(file, activeStacks, autoIndex) {
 			selected = append(selected, file.path)
 		}
 	}
@@ -184,16 +221,12 @@ func isAutoIgnoredDir(name string, ignoredDirs map[string]bool) bool {
 	return autoIgnoredDirs[name] || ignoredDirs[name]
 }
 
-func activateStacksForFile(file autoFile, activeStacks map[string]bool) {
-	for name, stack := range autoStacks {
-		detectExtensions := stack.sourceExtensions
-		if stack.detectExtensions != nil {
-			detectExtensions = stack.detectExtensions
-		}
-
-		if stack.markers[file.name] || detectExtensions[file.ext] {
-			activeStacks[name] = true
-		}
+func activateStacksForFile(file autoFile, activeStacks map[string]bool, index autoStackIndex) {
+	for _, name := range index.activationByName[file.name] {
+		activeStacks[name] = true
+	}
+	for _, name := range index.activationByExt[file.ext] {
+		activeStacks[name] = true
 	}
 
 	if strings.HasSuffix(file.name, ".csproj") || strings.HasSuffix(file.name, ".sln") {
@@ -261,12 +294,14 @@ func isAutoCommonFile(root, path string) bool {
 	return filepath.ToSlash(relativePath) != "" && strings.HasPrefix(filepath.ToSlash(relativePath), ".github/workflows/") && (strings.HasSuffix(path, ".yaml") || strings.HasSuffix(path, ".yml"))
 }
 
-func matchesAutoStack(file autoFile, activeStacks map[string]bool) bool {
-	for name, stack := range autoStacks {
-		if !activeStacks[name] {
-			continue
+func matchesAutoStack(file autoFile, activeStacks map[string]bool, index autoStackIndex) bool {
+	for _, name := range index.matchingByExt[file.ext] {
+		if activeStacks[name] {
+			return true
 		}
-		if stack.sourceExtensions[file.ext] || stack.configNames[file.name] {
+	}
+	for _, name := range index.matchingByName[file.name] {
+		if activeStacks[name] {
 			return true
 		}
 	}

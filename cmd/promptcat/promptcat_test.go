@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"strings"
 	"testing"
 )
 
@@ -194,6 +195,30 @@ func TestWriteFileBlockFormatsMarkers(t *testing.T) {
 	want := "<<<FILE: README.md>>>\nline one\nline two\n<<<END FILE>>>\n\n"
 	if output.String() != want {
 		t.Fatalf("unexpected output:\n%s", output.String())
+	}
+}
+
+func TestWriteFileBlockFromFileStreamsContent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "large.txt")
+	content := strings.Repeat("line\n", 2000) + "\n\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("write test file: %v", err)
+	}
+
+	file, err := os.Open(path)
+	if err != nil {
+		t.Fatalf("open test file: %v", err)
+	}
+	defer file.Close()
+
+	var output bytes.Buffer
+	if err := writeFileBlockFromFile(&output, path, file); err != nil {
+		t.Fatalf("writeFileBlockFromFile returned error: %v", err)
+	}
+
+	want := "<<<FILE: " + filepath.ToSlash(path) + ">>>\n" + strings.TrimRight(content, "\n") + "\n<<<END FILE>>>\n\n"
+	if output.String() != want {
+		t.Fatalf("unexpected streamed output")
 	}
 }
 
