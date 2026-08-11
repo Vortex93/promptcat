@@ -14,7 +14,7 @@ import (
 	"strings"
 )
 
-var version = "0.1.1"
+var version = "0.1.2"
 var buildDate = "dev"
 
 var binaryExtensions = map[string]bool{
@@ -117,6 +117,7 @@ func isProbablyText(data []byte) bool {
 
 type options struct {
 	auto            bool
+	upgrade         bool
 	fullPath        bool
 	include         map[string]bool
 	exclude         map[string]bool
@@ -142,6 +143,9 @@ func parseArgs(args []string) (options, error) {
 
 		case arg == "auto":
 			opts.auto = true
+
+		case arg == "--upgrade":
+			opts.upgrade = true
 
 		case arg == "--fullpath" || arg == "fullpath":
 			opts.fullPath = true
@@ -213,6 +217,9 @@ func parseArgs(args []string) (options, error) {
 		}
 	}
 
+	if opts.upgrade && (opts.auto || len(opts.inputs) > 0 || len(opts.excludePatterns) > 0 || opts.include != nil || opts.exclude != nil || opts.ignoredDirs != nil || opts.fullPath) {
+		return opts, flagError("--upgrade cannot be combined with other options or inputs")
+	}
 	if opts.auto && len(opts.inputs) > 0 {
 		return opts, flagError("auto cannot be combined with explicit files or glob patterns")
 	}
@@ -237,6 +244,7 @@ Usage:
 Options:
   --help, -h            Show help
   --version, -v         Show version
+  --upgrade             Download and install the latest release
   --fullpath            Output absolute file paths
   --include=go,md       Include only specific extensions
   --exclude=json        Exclude extensions
@@ -597,6 +605,13 @@ func main() {
 		fmt.Fprintln(os.Stderr)
 		fmt.Fprintln(os.Stderr, usage())
 		os.Exit(1)
+	}
+	if opts.upgrade {
+		if err := upgrade(); err != nil {
+			fmt.Fprintf(os.Stderr, "Upgrade failed: %v\n", err)
+			os.Exit(1)
+		}
+		return
 	}
 
 	var args []string

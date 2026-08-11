@@ -136,6 +136,12 @@ Auto-detect project files:
 promptcat auto > prompt.txt
 ```
 
+Upgrade an installed copy to latest GitHub release:
+
+```bash
+promptcat --upgrade
+```
+
 ## Usage
 
 ```text
@@ -151,6 +157,7 @@ Directories passed directly are skipped.
 | --- | --- |
 | `-h`, `--help` | Show help output |
 | `-v`, `--version` | Show version and build metadata |
+| `--upgrade` | Download and install the latest release |
 | `--fullpath` | Output absolute paths instead of the provided relative paths |
 | `--include=go,md` | Include only these extensions |
 | `--exclude=json,lock` | Exclude these extensions |
@@ -163,6 +170,7 @@ Notes:
 - `--include`, `--exclude`, and `--ignore-dir` accept comma-separated values
 - Binary files are skipped automatically
 - `auto` cannot be combined with explicit file paths or glob patterns
+- `--upgrade` downloads the matching release archive, verifies its checksum, and replaces the current executable
 - `!pattern` exclusions apply after all positive paths and glob patterns expand
 
 ### Auto Mode
@@ -220,7 +228,7 @@ The repository includes a small `Taskfile` for local workflows.
 task build
 task test
 task install
-task release VERSION=0.1.1
+task release VERSION=0.1.2
 ```
 
 Direct Go commands work as well:
@@ -236,10 +244,10 @@ Continuous integration runs the build and test workflow on Windows, macOS, and L
 To publish a new GitHub release, push a semantic version tag:
 
 ```bash
-task release VERSION=0.1.1
+task release VERSION=0.1.2
 ```
 
-That task runs tests, creates the `v0.1.1` tag, and pushes it to GitHub.
+That task runs tests, creates the `v0.1.2` tag, and pushes it to GitHub.
 The GitHub Actions release workflow then builds the binaries and publishes the release assets from GitHub-hosted runners.
 
 ## Contributing
