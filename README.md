@@ -21,7 +21,7 @@ package main
 
 - Concatenate multiple files into one stable text stream
 - Expand glob patterns inside the tool for predictable cross-shell behavior
-- Filter inputs with `--include`, `--exclude`, and `--ignore-dir`
+- Filter inputs with `--include`, `--exclude`, `--ignore-dir`, and positional `!pattern` exclusions
 - Skip binary files automatically by extension and content detection
 - Output relative paths by default or absolute paths with `--fullpath`
 
