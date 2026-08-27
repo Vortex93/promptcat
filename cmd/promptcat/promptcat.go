@@ -119,6 +119,7 @@ type options struct {
 	auto            bool
 	upgrade         bool
 	fullPath        bool
+	maxSize         int64
 	include         map[string]bool
 	exclude         map[string]bool
 	ignoredDirs     map[string]bool
@@ -164,6 +165,17 @@ func parseArgs(args []string) (options, error) {
 			}
 			opts.exclude = parseExts(args[i])
 
+		case arg == "--max-size":
+			i++
+			if i >= len(args) || strings.HasPrefix(args[i], "-") {
+				return opts, flagError("missing value for --max-size")
+			}
+			maxSize, err := parseMaxSize(args[i])
+			if err != nil {
+				return opts, err
+			}
+			opts.maxSize = maxSize
+
 		case arg == "--ignore-dir":
 			if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
 				i++
@@ -178,6 +190,13 @@ func parseArgs(args []string) (options, error) {
 
 		case strings.HasPrefix(arg, "--exclude="):
 			opts.exclude = parseExts(strings.TrimPrefix(arg, "--exclude="))
+
+		case strings.HasPrefix(arg, "--max-size="):
+			maxSize, err := parseMaxSize(strings.TrimPrefix(arg, "--max-size="))
+			if err != nil {
+				return opts, err
+			}
+			opts.maxSize = maxSize
 
 		case strings.HasPrefix(arg, "exclude="):
 			opts.exclude = parseExts(strings.TrimPrefix(arg, "exclude="))
@@ -217,7 +236,7 @@ func parseArgs(args []string) (options, error) {
 		}
 	}
 
-	if opts.upgrade && (opts.auto || len(opts.inputs) > 0 || len(opts.excludePatterns) > 0 || opts.include != nil || opts.exclude != nil || opts.ignoredDirs != nil || opts.fullPath) {
+	if opts.upgrade && (opts.auto || len(opts.inputs) > 0 || len(opts.excludePatterns) > 0 || opts.include != nil || opts.exclude != nil || opts.ignoredDirs != nil || opts.fullPath || opts.maxSize > 0) {
 		return opts, flagError("--upgrade cannot be combined with other options or inputs")
 	}
 	if opts.auto && len(opts.inputs) > 0 {
@@ -234,6 +253,49 @@ func flagError(message string) error {
 	return fmt.Errorf("%s", message)
 }
 
+func parseMaxSize(value string) (int64, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0, flagError("--max-size must be greater than zero")
+	}
+
+	digitsEnd := 0
+	for digitsEnd < len(value) && value[digitsEnd] >= '0' && value[digitsEnd] <= '9' {
+		digitsEnd++
+	}
+	if digitsEnd == 0 {
+		return 0, flagError(fmt.Sprintf("invalid --max-size value %q", value))
+	}
+
+	amount, err := strconv.ParseUint(value[:digitsEnd], 10, 64)
+	if err != nil || amount == 0 {
+		return 0, flagError(fmt.Sprintf("invalid --max-size value %q", value))
+	}
+
+	multipliers := map[string]uint64{
+		"":    1,
+		"B":   1,
+		"KB":  1000,
+		"MB":  1000 * 1000,
+		"GB":  1000 * 1000 * 1000,
+		"TB":  1000 * 1000 * 1000 * 1000,
+		"KIB": 1 << 10,
+		"MIB": 1 << 20,
+		"GIB": 1 << 30,
+		"TIB": 1 << 40,
+	}
+	multiplier, ok := multipliers[strings.ToUpper(value[digitsEnd:])]
+	if !ok || amount > uint64((1<<63-1))/multiplier {
+		return 0, flagError(fmt.Sprintf("invalid --max-size value %q", value))
+	}
+
+	return int64(amount * multiplier), nil
+}
+
+func exceedsMaxSize(size, maxSize int64) bool {
+	return maxSize > 0 && size > maxSize
+}
+
 func usage() string {
 	return `promptcat - concatenate text and source files for AI prompts
 
@@ -245,6 +307,7 @@ Options:
   --help, -h            Show help
   --version, -v         Show version
   --upgrade             Download and install the latest release
+  --max-size=1MB        Skip files larger than this size
   --fullpath            Output absolute file paths
   --include=go,md       Include only specific extensions
   --exclude=json        Exclude extensions
@@ -420,8 +483,8 @@ func expandInputs(inputs, excludePatterns []string, ignoredDirs map[string]bool)
 	}
 
 	for root, indexes := range byRoot {
-		info, err := os.Stat(root)
-		if err != nil || !info.IsDir() {
+		info, err := os.Lstat(root)
+		if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
 			for _, index := range indexes {
 				fmt.Fprintf(os.Stderr, "Skipping (glob root not found): %s\n", globInputs[index].input)
 			}
@@ -430,6 +493,9 @@ func expandInputs(inputs, excludePatterns []string, ignoredDirs map[string]bool)
 
 		err = filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
 			if walkErr != nil {
+				return nil
+			}
+			if entry.Type()&os.ModeSymlink != 0 {
 				return nil
 			}
 			if entry.IsDir() {
@@ -492,6 +558,33 @@ func matchesAnyPattern(path string, matchers []*regexp.Regexp) bool {
 type trimTrailingNewlinesWriter struct {
 	writer  io.Writer
 	pending int
+}
+
+type outputError struct {
+	err error
+}
+
+func (e outputError) Error() string {
+	return e.err.Error()
+}
+
+func (e outputError) Unwrap() error {
+	return e.err
+}
+
+type outputWriter struct {
+	writer io.Writer
+}
+
+func (w outputWriter) Write(data []byte) (int, error) {
+	n, err := w.writer.Write(data)
+	if err != nil {
+		return n, outputError{err: err}
+	}
+	if n != len(data) {
+		return n, outputError{err: io.ErrShortWrite}
+	}
+	return n, nil
 }
 
 func (w *trimTrailingNewlinesWriter) Write(data []byte) (int, error) {
@@ -598,82 +691,84 @@ func writeFileBlockFromFile(output io.Writer, path string, file *os.File) error 
 	return err
 }
 
-func main() {
-	opts, err := parseArgs(os.Args[1:])
+func run(cliArgs []string, stdout, stderr io.Writer) error {
+	opts, err := parseArgs(cliArgs)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		fmt.Fprintln(os.Stderr)
-		fmt.Fprintln(os.Stderr, usage())
-		os.Exit(1)
+		return fmt.Errorf("%s\n\n%s", err, usage())
 	}
 	if opts.upgrade {
 		if err := upgrade(); err != nil {
-			fmt.Fprintf(os.Stderr, "Upgrade failed: %v\n", err)
-			os.Exit(1)
+			return fmt.Errorf("Upgrade failed: %w", err)
 		}
-		return
+		return nil
 	}
 
 	var args []string
 	if opts.auto {
 		args, err = selectAutoFiles(".", opts.ignoredDirs)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Auto detection failed: %v\n", err)
-			os.Exit(1)
+			return fmt.Errorf("Auto detection failed: %w", err)
 		}
 	} else {
 		args, err = expandInputs(opts.inputs, opts.excludePatterns, opts.ignoredDirs)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Failed to expand inputs: %v\n", err)
-			os.Exit(1)
+			return fmt.Errorf("Failed to expand inputs: %w", err)
 		}
 	}
 
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, usage())
-		os.Exit(1)
+		return errors.New(usage())
 	}
 
-	output := bufio.NewWriter(os.Stdout)
-	defer output.Flush()
+	output := bufio.NewWriter(outputWriter{writer: stdout})
 
 	for _, input := range args {
 		if isIgnored(input, opts.ignoredDirs) {
-			fmt.Fprintf(os.Stderr, "Skipping (ignored dir): %s\n", input)
+			fmt.Fprintf(stderr, "Skipping (ignored dir): %s\n", input)
 			continue
 		}
 
-		info, err := os.Stat(input)
+		info, err := os.Lstat(input)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Skipping (not found): %s\n", input)
+			fmt.Fprintf(stderr, "Skipping (not found): %s\n", input)
+			continue
+		}
+
+		if info.Mode()&os.ModeSymlink != 0 {
+			fmt.Fprintf(stderr, "Skipping (symlink): %s\n", input)
 			continue
 		}
 
 		if info.IsDir() {
-			fmt.Fprintf(os.Stderr, "Skipping (directory): %s\n", input)
+			fmt.Fprintf(stderr, "Skipping (directory): %s\n", input)
+			continue
+		}
+
+		if exceedsMaxSize(info.Size(), opts.maxSize) {
+			fmt.Fprintf(stderr, "Skipping (too large): %s\n", input)
 			continue
 		}
 
 		ext := strings.ToLower(filepath.Ext(input))
 
 		if opts.include != nil && !opts.include[ext] {
-			fmt.Fprintf(os.Stderr, "Skipping (not included): %s\n", input)
+			fmt.Fprintf(stderr, "Skipping (not included): %s\n", input)
 			continue
 		}
 
 		if opts.exclude != nil && opts.exclude[ext] {
-			fmt.Fprintf(os.Stderr, "Skipping (excluded ext): %s\n", input)
+			fmt.Fprintf(stderr, "Skipping (excluded ext): %s\n", input)
 			continue
 		}
 
 		if binaryExtensions[ext] {
-			fmt.Fprintf(os.Stderr, "Skipping (binary extension): %s\n", input)
+			fmt.Fprintf(stderr, "Skipping (binary extension): %s\n", input)
 			continue
 		}
 
 		file, err := os.Open(input)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Skipping (read error): %s\n", input)
+			fmt.Fprintf(stderr, "Skipping (read error): %s\n", input)
 			continue
 		}
 
@@ -689,10 +784,24 @@ func main() {
 		file.Close()
 		if err != nil {
 			if errors.Is(err, errBinaryContent) {
-				fmt.Fprintf(os.Stderr, "Skipping (binary content): %s\n", input)
+				fmt.Fprintf(stderr, "Skipping (binary content): %s\n", input)
+			} else if errors.As(err, new(outputError)) {
+				return fmt.Errorf("writing output for %s: %w", input, err)
 			} else {
-				fmt.Fprintf(os.Stderr, "Skipping (read error): %s\n", input)
+				fmt.Fprintf(stderr, "Skipping (read error): %s\n", input)
 			}
 		}
+	}
+
+	if err := output.Flush(); err != nil {
+		return fmt.Errorf("flushing output: %w", err)
+	}
+	return nil
+}
+
+func main() {
+	if err := run(os.Args[1:], os.Stdout, os.Stderr); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
 	}
 }

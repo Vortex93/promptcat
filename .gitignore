@@ -28,5 +28,6 @@ go.work
 /promptcat
 /promptcat.exe
 /bin/
+/node_modules/
 
 # End of https://www.toptal.com/developers/gitignore/api/go

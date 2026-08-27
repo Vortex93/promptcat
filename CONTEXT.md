@@ -6,6 +6,8 @@
 ## Current Shape
 - Top-level app root with project files and local instructions.
 - Positional `!glob` arguments exclude expanded file paths; `--exclude` remains extension-only.
+- Project workflows use `mise.toml`; multi-step build and release tasks run through `scripts/*.mjs` with ZX.
+- Symlinks are skipped; auto mode ignores Python environments and cache directories.
 
 ## Verification
-- Use the folder's taskfile or README commands when present.
+- Use the folder's mise.toml or README commands when present.

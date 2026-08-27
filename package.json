@@ -1,0 +1,8 @@
+{
+  "name": "promptcat-scripts",
+  "private": true,
+  "type": "module",
+  "devDependencies": {
+    "zx": "^8.8.5"
+  }
+}

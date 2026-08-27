@@ -33,7 +33,8 @@ var autoIgnoredDirs = map[string]bool{
 	".astro": true, ".cache": true, ".git": true, ".next": true, ".nuxt": true,
 	".svelte-kit": true, ".turbo": true, "bin": true, "build": true, "coverage": true,
 	"dist": true, "node_modules": true, "out": true, "storybook-static": true, "target": true,
-	"vendor": true,
+	"vendor": true, ".venv": true, "venv": true, "__pycache__": true, ".pytest_cache": true,
+	".mypy_cache": true, ".ruff_cache": true, ".tox": true, ".pixi": true,
 }
 
 var autoStacks = map[string]autoStack{
@@ -178,6 +179,9 @@ func selectAutoFiles(root string, ignoredDirs map[string]bool) ([]string, error)
 	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			return nil
 		}
 
 		if entry.IsDir() {

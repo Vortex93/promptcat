@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -47,6 +48,56 @@ func TestParseArgsParsesFlagsAndInputs(t *testing.T) {
 	if !reflect.DeepEqual(opts.excludePatterns, []string{"**/generated/**"}) {
 		t.Fatalf("unexpected exclusion patterns: %#v", opts.excludePatterns)
 	}
+}
+
+func TestParseArgsParsesMaxSize(t *testing.T) {
+	for _, args := range [][]string{
+		{"--max-size", "1MB", "file.json"},
+		{"--max-size=1MiB", "file.json"},
+	} {
+		opts, err := parseArgs(args)
+		if err != nil {
+			t.Fatalf("parseArgs(%#v) returned error: %v", args, err)
+		}
+		if opts.maxSize == 0 {
+			t.Fatalf("parseArgs(%#v) did not set maxSize", args)
+		}
+	}
+
+	if got, want := mustParseMaxSize("1MB"), int64(1_000_000); got != want {
+		t.Fatalf("parseMaxSize(1MB) = %d, want %d", got, want)
+	}
+	if got, want := mustParseMaxSize("1MiB"), int64(1<<20); got != want {
+		t.Fatalf("parseMaxSize(1MiB) = %d, want %d", got, want)
+	}
+}
+
+func TestParseMaxSizeRejectsInvalidValues(t *testing.T) {
+	for _, value := range []string{"", "0", "-1", "1.5MB", "1XB", "999999999999999999999999TB"} {
+		if _, err := parseMaxSize(value); err == nil {
+			t.Fatalf("parseMaxSize(%q) returned nil error", value)
+		}
+	}
+}
+
+func TestExceedsMaxSizeIncludesExactBoundary(t *testing.T) {
+	if exceedsMaxSize(1_000_000, 1_000_000) {
+		t.Fatal("file at max-size boundary should be included")
+	}
+	if !exceedsMaxSize(1_000_001, 1_000_000) {
+		t.Fatal("file above max-size should be skipped")
+	}
+	if exceedsMaxSize(1_000_001, 0) {
+		t.Fatal("zero max-size should disable filtering")
+	}
+}
+
+func mustParseMaxSize(value string) int64 {
+	parsed, err := parseMaxSize(value)
+	if err != nil {
+		panic(err)
+	}
+	return parsed
 }
 
 func TestParseArgsRejectsEmptyOrExclusionOnlyPatterns(t *testing.T) {
@@ -168,6 +219,30 @@ func TestExpandInputsExcludesMatchingPatterns(t *testing.T) {
 	}
 }
 
+func TestExpandInputsIgnoresSymlinks(t *testing.T) {
+	root := t.TempDir()
+	writePath := func(name string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(root, name), []byte("package main\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writePath("real.go")
+	writePath("outside.go")
+	if err := os.Symlink(filepath.Join(root, "outside.go"), filepath.Join(root, "linked.go")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	got, err := expandInputs([]string{filepath.Join(root, "*.go")}, nil, nil)
+	if err != nil {
+		t.Fatalf("expandInputs returned error: %v", err)
+	}
+	want := []string{filepath.Join(root, "outside.go"), filepath.Join(root, "real.go")}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("expandInputs returned %#v, want %#v", got, want)
+	}
+}
+
 func TestIsIgnoredChecksAnyPathSegment(t *testing.T) {
 	ignored := parseDirs(".git,node_modules,dist")
 
@@ -220,6 +295,44 @@ func TestWriteFileBlockFromFileStreamsContent(t *testing.T) {
 	if output.String() != want {
 		t.Fatalf("unexpected streamed output")
 	}
+}
+
+func TestRunReturnsOutputErrors(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "input.txt")
+	if err := os.WriteFile(path, []byte("text\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	err := run([]string{path}, failingWriter{}, io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "output") {
+		t.Fatalf("run returned %v, want output error", err)
+	}
+}
+
+func TestRunSkipsExplicitSymlinks(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "outside.txt")
+	link := filepath.Join(root, "linked.txt")
+	if err := os.WriteFile(target, []byte("secret\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	var output, stderr bytes.Buffer
+	if err := run([]string{link}, &output, &stderr); err != nil {
+		t.Fatalf("run returned error: %v", err)
+	}
+	if output.Len() != 0 || !strings.Contains(stderr.String(), "Skipping (symlink)") {
+		t.Fatalf("unexpected symlink handling: output=%q stderr=%q", output.String(), stderr.String())
+	}
+}
+
+type failingWriter struct{}
+
+func (failingWriter) Write([]byte) (int, error) {
+	return 0, io.ErrClosedPipe
 }
 
 func TestIsProbablyTextRejectsBinaryContent(t *testing.T) {

@@ -1,0 +1,29 @@
+min_version = "2026.7.7"
+
+[tasks.default]
+description = "List project tasks"
+run = "mise tasks"
+
+[tasks.build]
+description = "Build promptcat into ./bin"
+run = "bun scripts/build.mjs"
+
+[tasks.deploy]
+description = "Alias for release"
+run = "mise run release VERSION=$VERSION"
+
+[tasks.install]
+description = "Install promptcat into GOBIN or GOPATH/bin"
+run = "go install ./cmd/promptcat"
+
+[tasks.release]
+description = "Create and push a version tag to trigger the GitHub release workflow"
+run = "bun scripts/release.mjs"
+
+[tasks.setup]
+description = "Install ZX workflow dependencies"
+run = "bun install --frozen-lockfile"
+
+[tasks.test]
+description = "Run all tests"
+run = "go test ./..."

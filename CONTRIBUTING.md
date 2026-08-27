@@ -9,9 +9,9 @@
 Optional local task shortcuts:
 
 ```bash
-task build
-task test
-task install
+ mise run build
+ mise run test
+ mise run install
 ```
 
 ## Pull Requests

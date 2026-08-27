@@ -130,6 +130,12 @@ Write the result to a file you can paste elsewhere:
 promptcat --include=go,md README.md "cmd/**/*.go" > prompt.txt
 ```
 
+Skip files larger than 1 MB:
+
+```bash
+promptcat --max-size=1MB "**/*.json"
+```
+
 Auto-detect project files:
 
 ```bash
@@ -158,6 +164,7 @@ Directories passed directly are skipped.
 | `-h`, `--help` | Show help output |
 | `-v`, `--version` | Show version and build metadata |
 | `--upgrade` | Download and install the latest release |
+| `--max-size=1MB` | Skip files larger than the specified size |
 | `--fullpath` | Output absolute paths instead of the provided relative paths |
 | `--include=go,md` | Include only these extensions |
 | `--exclude=json,lock` | Exclude these extensions |
@@ -168,7 +175,9 @@ Directories passed directly are skipped.
 Notes:
 - Extensions can be written with or without a leading dot
 - `--include`, `--exclude`, and `--ignore-dir` accept comma-separated values
+- `--max-size` accepts bytes or suffixes such as `KB`, `MB`, `GB`, `KiB`, and `MiB`
 - Binary files are skipped automatically
+- Symbolic links are skipped automatically
 - `auto` cannot be combined with explicit file paths or glob patterns
 - `--upgrade` downloads the matching release archive, verifies its checksum, and replaces the current executable
 - `!pattern` exclusions apply after all positive paths and glob patterns expand
@@ -177,7 +186,7 @@ Notes:
 
 `promptcat auto` detects mixed projects and selects source files, relevant manifests/configuration, root documentation, and GitHub Actions workflows. It supports Go; JavaScript, TypeScript, React, Vue, Svelte, Angular, Astro, and Nuxt; Python; Rust; Java and Kotlin; C#; Ruby; PHP; Swift; Dart/Flutter; Elixir; shell; Docker/Compose; and Terraform/HCL.
 
-Auto mode skips lockfiles and common generated or dependency folders including `.git`, `node_modules`, `vendor`, `dist`, `build`, `coverage`, `target`, `.next`, `.nuxt`, `.svelte-kit`, and `.cache`. Use `--include`, `--exclude`, or `--ignore-dir` to narrow its selection further.
+Auto mode skips lockfiles and common generated or dependency folders including `.git`, `node_modules`, `vendor`, `.venv`, `venv`, `__pycache__`, `.pytest_cache`, `.mypy_cache`, `.ruff_cache`, `.tox`, `.pixi`, `dist`, `build`, `coverage`, `target`, `.next`, `.nuxt`, `.svelte-kit`, and `.cache`. Use `--include`, `--exclude`, `--ignore-dir`, or `--max-size` to narrow its selection further.
 
 ## Globs and Shells
 
@@ -222,13 +231,15 @@ This makes the output easy to paste into prompts and easy for downstream tooling
 
 ## Development
 
-The repository includes a small `Taskfile` for local workflows.
+The repository includes a small `mise.toml` for local workflows.
+Multi-step workflows run through ZX scripts in `scripts/`.
 
 ```bash
-task build
-task test
-task install
-task release VERSION=0.1.2
+mise run setup
+mise run build
+mise run test
+mise run install
+mise run release VERSION=0.1.2
 ```
 
 Direct Go commands work as well:
@@ -244,7 +255,7 @@ Continuous integration runs the build and test workflow on Windows, macOS, and L
 To publish a new GitHub release, push a semantic version tag:
 
 ```bash
-task release VERSION=0.1.2
+mise run release VERSION=0.1.2
 ```
 
 That task runs tests, creates the `v0.1.2` tag, and pushes it to GitHub.

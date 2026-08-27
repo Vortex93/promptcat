@@ -66,6 +66,35 @@ func TestSelectAutoFilesMixedProjectAndCustomIgnore(t *testing.T) {
 	})
 }
 
+func TestSelectAutoFilesIgnoresPythonEnvironmentsAndCaches(t *testing.T) {
+	root := t.TempDir()
+	writeAutoFiles(t, root, map[string]string{
+		"pyproject.toml": "[project]\nname = 'example'\n",
+		"main.py":        "print('ok')\n",
+	})
+	for _, directory := range []string{".venv", "venv", "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".tox", ".pixi"} {
+		writeAutoFiles(t, root, map[string]string{
+			filepath.Join(directory, "dependency.py"): "print('ignored')\n",
+		})
+	}
+
+	assertAutoFiles(t, root, nil, []string{"main.py", "pyproject.toml"})
+}
+
+func TestSelectAutoFilesIgnoresSymlinks(t *testing.T) {
+	root := t.TempDir()
+	writeAutoFiles(t, root, map[string]string{
+		"go.mod":     "module example.com/project\n",
+		"main.go":    "package main\n",
+		"outside.go": "package outside\n",
+	})
+	if err := os.Symlink(filepath.Join(root, "outside.go"), filepath.Join(root, "linked.go")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	assertAutoFiles(t, root, nil, []string{"go.mod", "main.go", "outside.go"})
+}
+
 func TestParseArgsAcceptsStandaloneAuto(t *testing.T) {
 	opts, err := parseArgs([]string{"auto", "--ignore-dir=generated"})
 	if err != nil {
