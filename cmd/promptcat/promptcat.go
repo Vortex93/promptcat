@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 var version = "0.1.2"
@@ -24,6 +25,19 @@ var binaryExtensions = map[string]bool{
 	".so": true, ".bin": true, ".woff": true, ".woff2": true, ".ttf": true,
 	".otf": true, ".mp3": true, ".mp4": true, ".mov": true, ".avi": true,
 	".mkv": true, ".webm": true,
+}
+
+var maxSizeMultipliers = map[string]uint64{
+	"":    1,
+	"B":   1,
+	"KB":  1000,
+	"MB":  1000 * 1000,
+	"GB":  1000 * 1000 * 1000,
+	"TB":  1000 * 1000 * 1000 * 1000,
+	"KIB": 1 << 10,
+	"MIB": 1 << 20,
+	"GIB": 1 << 30,
+	"TIB": 1 << 40,
 }
 
 const (
@@ -112,7 +126,7 @@ func isProbablyText(data []byte) bool {
 		}
 	}
 
-	return float64(suspicious)/float64(len(sample)) < 0.02
+	return suspicious*100 < len(sample)*2
 }
 
 type options struct {
@@ -272,19 +286,7 @@ func parseMaxSize(value string) (int64, error) {
 		return 0, flagError(fmt.Sprintf("invalid --max-size value %q", value))
 	}
 
-	multipliers := map[string]uint64{
-		"":    1,
-		"B":   1,
-		"KB":  1000,
-		"MB":  1000 * 1000,
-		"GB":  1000 * 1000 * 1000,
-		"TB":  1000 * 1000 * 1000 * 1000,
-		"KIB": 1 << 10,
-		"MIB": 1 << 20,
-		"GIB": 1 << 30,
-		"TIB": 1 << 40,
-	}
-	multiplier, ok := multipliers[strings.ToUpper(value[digitsEnd:])]
+	multiplier, ok := maxSizeMultipliers[strings.ToUpper(value[digitsEnd:])]
 	if !ok || amount > uint64((1<<63-1))/multiplier {
 		return 0, flagError(fmt.Sprintf("invalid --max-size value %q", value))
 	}
@@ -460,10 +462,15 @@ func expandInputs(inputs, excludePatterns []string, ignoredDirs map[string]bool)
 		input   string
 		matcher *regexp.Regexp
 		root    string
+		index   int
+	}
+	type globMatch struct {
+		inputIndex int
+		path       string
 	}
 
 	globInputs := make([]globInput, 0, len(inputs))
-	for _, input := range inputs {
+	for i, input := range inputs {
 		if !hasGlob(input) {
 			continue
 		}
@@ -473,10 +480,10 @@ func expandInputs(inputs, excludePatterns []string, ignoredDirs map[string]bool)
 			fmt.Fprintf(os.Stderr, "Skipping (bad pattern): %s\n", input)
 			continue
 		}
-		globInputs = append(globInputs, globInput{input: input, matcher: matcher, root: globRoot(input)})
+		globInputs = append(globInputs, globInput{input: input, matcher: matcher, root: globRoot(input), index: i})
 	}
 
-	matchesByInput := make(map[string][]string, len(globInputs))
+	globMatches := make([]globMatch, 0)
 	byRoot := make(map[string][]int)
 	for i, input := range globInputs {
 		byRoot[input.root] = append(byRoot[input.root], i)
@@ -491,10 +498,7 @@ func expandInputs(inputs, excludePatterns []string, ignoredDirs map[string]bool)
 			continue
 		}
 
-		err = filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
-			if walkErr != nil {
-				return nil
-			}
+		err = walkDirUnsorted(root, func(path string, entry fs.DirEntry) error {
 			if entry.Type()&os.ModeSymlink != 0 {
 				return nil
 			}
@@ -508,8 +512,7 @@ func expandInputs(inputs, excludePatterns []string, ignoredDirs map[string]bool)
 			trimmedPath := trimDotSlash(path)
 			for _, index := range indexes {
 				if globInputs[index].matcher.MatchString(trimmedPath) {
-					input := globInputs[index].input
-					matchesByInput[input] = append(matchesByInput[input], path)
+					globMatches = append(globMatches, globMatch{inputIndex: globInputs[index].index, path: path})
 				}
 			}
 			return nil
@@ -519,6 +522,16 @@ func expandInputs(inputs, excludePatterns []string, ignoredDirs map[string]bool)
 				fmt.Fprintf(os.Stderr, "Skipping (walk error): %s\n", globInputs[index].input)
 			}
 		}
+	}
+	sort.Slice(globMatches, func(i, j int) bool {
+		if globMatches[i].inputIndex != globMatches[j].inputIndex {
+			return globMatches[i].inputIndex < globMatches[j].inputIndex
+		}
+		return globMatches[i].path < globMatches[j].path
+	})
+	matchesByInput := make(map[int][]string, len(globInputs))
+	for _, match := range globMatches {
+		matchesByInput[match.inputIndex] = append(matchesByInput[match.inputIndex], match.path)
 	}
 
 	expanded := make([]string, 0, len(inputs))
@@ -530,13 +543,12 @@ func expandInputs(inputs, excludePatterns []string, ignoredDirs map[string]bool)
 		seen[match] = true
 		expanded = append(expanded, match)
 	}
-	for _, input := range inputs {
+	for i, input := range inputs {
 		if !hasGlob(input) {
 			appendMatch(input)
 			continue
 		}
-		matches := matchesByInput[input]
-		sort.Strings(matches)
+		matches := matchesByInput[i]
 		for _, match := range matches {
 			appendMatch(match)
 		}
@@ -587,28 +599,145 @@ func (w outputWriter) Write(data []byte) (int, error) {
 	return n, nil
 }
 
-func (w *trimTrailingNewlinesWriter) Write(data []byte) (int, error) {
-	start := 0
-	for i, b := range data {
-		if b == '\n' {
-			if start < i {
-				if err := w.flush(data[start:i]); err != nil {
-					return 0, err
-				}
-			}
-			w.pending++
-			start = i + 1
-			continue
-		}
+const readWorkerCount = 4
 
-		if w.pending > 0 {
-			if err := w.flushNewlines(); err != nil {
-				return 0, err
+type fileTask struct {
+	index int
+	input string
+	path  string
+}
+
+type fileResult struct {
+	task   fileTask
+	reader *io.PipeReader
+}
+
+func streamFiles(output io.Writer, tasks []fileTask, stderr io.Writer) error {
+	if len(tasks) == 0 {
+		return nil
+	}
+
+	workerCount := readWorkerCount
+	if len(tasks) < workerCount {
+		workerCount = len(tasks)
+	}
+	jobs := make(chan fileTask, len(tasks))
+	results := make(chan fileResult, workerCount)
+	done := make(chan struct{})
+	var workers sync.WaitGroup
+
+	for _, task := range tasks {
+		jobs <- task
+	}
+	close(jobs)
+
+	worker := func() {
+		defer workers.Done()
+		for {
+			select {
+			case <-done:
+				return
+			case task, ok := <-jobs:
+				if !ok {
+					return
+				}
+				reader, writer := io.Pipe()
+				result := fileResult{task: task, reader: reader}
+				select {
+				case <-done:
+					reader.Close()
+					writer.Close()
+					return
+				case results <- result:
+				}
+
+				select {
+				case <-done:
+					reader.Close()
+					writer.Close()
+					return
+				default:
+				}
+
+				file, err := os.Open(task.input)
+				if err == nil {
+					err = writeFileBlockFromFile(writer, task.path, file)
+					file.Close()
+				}
+				writer.CloseWithError(err)
 			}
 		}
 	}
-	if w.pending == 0 && start < len(data) {
-		if err := w.flush(data[start:]); err != nil {
+
+	workers.Add(workerCount)
+	for i := 0; i < workerCount; i++ {
+		go worker()
+	}
+
+	pending := make(map[int]fileResult, workerCount)
+	next := 0
+	for received := 0; received < len(tasks); received++ {
+		result := <-results
+		pending[result.task.index] = result
+		for {
+			ordered, ok := pending[next]
+			if !ok {
+				break
+			}
+			_, err := io.Copy(output, ordered.reader)
+			ordered.reader.Close()
+			delete(pending, next)
+			if err != nil {
+				if errors.Is(err, errBinaryContent) {
+					fmt.Fprintf(stderr, "Skipping (binary content): %s\n", ordered.task.input)
+				} else if errors.As(err, new(outputError)) {
+					close(done)
+					for _, result := range pending {
+						result.reader.Close()
+					}
+					workers.Wait()
+					return fmt.Errorf("writing output for %s: %w", ordered.task.input, err)
+				} else {
+					fmt.Fprintf(stderr, "Skipping (read error): %s\n", ordered.task.input)
+				}
+			}
+			next++
+		}
+	}
+
+	close(done)
+	workers.Wait()
+	return nil
+}
+
+func (w *trimTrailingNewlinesWriter) Write(data []byte) (int, error) {
+	end := len(data)
+	for end > 0 && data[end-1] == '\n' {
+		end--
+	}
+
+	if end < len(data) {
+		if end > 0 {
+			if w.pending > 0 {
+				if err := w.flushNewlines(); err != nil {
+					return 0, err
+				}
+			}
+			if err := w.flush(data[:end]); err != nil {
+				return 0, err
+			}
+		}
+		w.pending += len(data) - end
+		return len(data), nil
+	}
+
+	if w.pending > 0 {
+		if err := w.flushNewlines(); err != nil {
+			return 0, err
+		}
+	}
+	if len(data) > 0 {
+		if err := w.flush(data); err != nil {
 			return 0, err
 		}
 	}
@@ -648,8 +777,24 @@ func (w *trimTrailingNewlinesWriter) finish() error {
 	return w.flush([]byte("\n"))
 }
 
+func writeFileHeader(output io.Writer, path string) error {
+	if _, err := io.WriteString(output, fileStartMarkerPrefix); err != nil {
+		return err
+	}
+	if _, err := io.WriteString(output, filepath.ToSlash(path)); err != nil {
+		return err
+	}
+	_, err := io.WriteString(output, fileStartMarkerSuffix+"\n")
+	return err
+}
+
+func writeFileFooter(output io.Writer) error {
+	_, err := io.WriteString(output, fileEndMarker+"\n\n")
+	return err
+}
+
 func writeFileBlock(output io.Writer, path string, data []byte) error {
-	if _, err := fmt.Fprintf(output, "%s%s%s\n", fileStartMarkerPrefix, filepath.ToSlash(path), fileStartMarkerSuffix); err != nil {
+	if err := writeFileHeader(output, path); err != nil {
 		return err
 	}
 	content := &trimTrailingNewlinesWriter{writer: output}
@@ -659,21 +804,20 @@ func writeFileBlock(output io.Writer, path string, data []byte) error {
 	if err := content.finish(); err != nil {
 		return err
 	}
-	_, err := fmt.Fprintf(output, "%s\n\n", fileEndMarker)
-	return err
+	return writeFileFooter(output)
 }
 
 func writeFileBlockFromFile(output io.Writer, path string, file *os.File) error {
 	const sampleSize = 8000
-	sample := make([]byte, sampleSize)
-	n, err := io.ReadFull(file, sample)
+	var sample [sampleSize]byte
+	n, err := io.ReadFull(file, sample[:])
 	if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
 		return err
 	}
 	if !isProbablyText(sample[:n]) {
 		return errBinaryContent
 	}
-	if _, err := fmt.Fprintf(output, "%s%s%s\n", fileStartMarkerPrefix, filepath.ToSlash(path), fileStartMarkerSuffix); err != nil {
+	if err := writeFileHeader(output, path); err != nil {
 		return err
 	}
 
@@ -687,8 +831,7 @@ func writeFileBlockFromFile(output io.Writer, path string, file *os.File) error 
 	if err := content.finish(); err != nil {
 		return err
 	}
-	_, err = fmt.Fprintf(output, "%s\n\n", fileEndMarker)
-	return err
+	return writeFileFooter(output)
 }
 
 func run(cliArgs []string, stdout, stderr io.Writer) error {
@@ -720,7 +863,8 @@ func run(cliArgs []string, stdout, stderr io.Writer) error {
 		return errors.New(usage())
 	}
 
-	output := bufio.NewWriter(outputWriter{writer: stdout})
+	output := bufio.NewWriterSize(outputWriter{writer: stdout}, 256*1024)
+	tasks := make([]fileTask, 0, len(args))
 
 	for _, input := range args {
 		if isIgnored(input, opts.ignoredDirs) {
@@ -766,12 +910,6 @@ func run(cliArgs []string, stdout, stderr io.Writer) error {
 			continue
 		}
 
-		file, err := os.Open(input)
-		if err != nil {
-			fmt.Fprintf(stderr, "Skipping (read error): %s\n", input)
-			continue
-		}
-
 		path := input
 		if opts.fullPath {
 			abs, err := filepath.Abs(input)
@@ -780,17 +918,10 @@ func run(cliArgs []string, stdout, stderr io.Writer) error {
 			}
 		}
 
-		err = writeFileBlockFromFile(output, path, file)
-		file.Close()
-		if err != nil {
-			if errors.Is(err, errBinaryContent) {
-				fmt.Fprintf(stderr, "Skipping (binary content): %s\n", input)
-			} else if errors.As(err, new(outputError)) {
-				return fmt.Errorf("writing output for %s: %w", input, err)
-			} else {
-				fmt.Fprintf(stderr, "Skipping (read error): %s\n", input)
-			}
-		}
+		tasks = append(tasks, fileTask{index: len(tasks), input: input, path: path})
+	}
+	if err := streamFiles(output, tasks, stderr); err != nil {
+		return err
 	}
 
 	if err := output.Flush(); err != nil {

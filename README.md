@@ -178,6 +178,8 @@ Notes:
 - `--max-size` accepts bytes or suffixes such as `KB`, `MB`, `GB`, `KiB`, and `MiB`
 - Binary files are skipped automatically
 - Symbolic links are skipped automatically
+- Directory traversal is unsorted internally, then results are sorted once for deterministic output
+- File reads use four bounded workers while output order stays deterministic
 - `auto` cannot be combined with explicit file paths or glob patterns
 - `--upgrade` downloads the matching release archive, verifies its checksum, and replaces the current executable
 - `!pattern` exclusions apply after all positive paths and glob patterns expand
@@ -249,6 +251,8 @@ go build ./cmd/promptcat
 go test ./...
 go install ./cmd/promptcat
 ```
+
+`mise run build` uses `default.pgo` automatically when that profile is present; otherwise it builds without PGO. Release builds use Go's `-pgo=auto` mode.
 
 Continuous integration runs the build and test workflow on Windows, macOS, and Linux.
 

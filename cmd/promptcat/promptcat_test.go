@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -273,6 +274,22 @@ func TestWriteFileBlockFormatsMarkers(t *testing.T) {
 	}
 }
 
+func TestTrimTrailingNewlinesWriterHandlesChunkBoundaries(t *testing.T) {
+	var output bytes.Buffer
+	writer := &trimTrailingNewlinesWriter{writer: &output}
+	for _, chunk := range []string{"line one\n", "\nline two", "\n\n"} {
+		if _, err := writer.Write([]byte(chunk)); err != nil {
+			t.Fatalf("Write returned error: %v", err)
+		}
+	}
+	if err := writer.finish(); err != nil {
+		t.Fatalf("finish returned error: %v", err)
+	}
+	if got, want := output.String(), "line one\n\nline two\n"; got != want {
+		t.Fatalf("trimmed output = %q, want %q", got, want)
+	}
+}
+
 func TestWriteFileBlockFromFileStreamsContent(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "large.txt")
 	content := strings.Repeat("line\n", 2000) + "\n\n"
@@ -329,10 +346,71 @@ func TestRunSkipsExplicitSymlinks(t *testing.T) {
 	}
 }
 
+func TestRunPreservesInputOrderWithParallelReaders(t *testing.T) {
+	root := t.TempDir()
+	inputs := make([]string, 0, 10)
+	for i := 0; i < 10; i++ {
+		path := filepath.Join(root, fmt.Sprintf("%02d.txt", i))
+		inputs = append(inputs, path)
+		if err := os.WriteFile(path, []byte(fmt.Sprintf("file-%d\n", i)), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	var output, stderr bytes.Buffer
+	if err := run(inputs, &output, &stderr); err != nil {
+		t.Fatalf("run returned error: %v", err)
+	}
+	var want strings.Builder
+	for i, path := range inputs {
+		fmt.Fprintf(&want, "<<<FILE: %s>>>\nfile-%d\n<<<END FILE>>>\n\n", filepath.ToSlash(path), i)
+	}
+	if output.String() != want.String() {
+		t.Fatalf("parallel output order/content mismatch:\n got: %q\nwant: %q", output.String(), want.String())
+	}
+}
+
+func TestRunSkipsBinaryContentWithParallelReaders(t *testing.T) {
+	root := t.TempDir()
+	binaryPath := filepath.Join(root, "binary.dat")
+	textPath := filepath.Join(root, "text.txt")
+	if err := os.WriteFile(binaryPath, []byte{0, 1, 2}, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(textPath, []byte("text\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var output, stderr bytes.Buffer
+	if err := run([]string{binaryPath, textPath}, &output, &stderr); err != nil {
+		t.Fatalf("run returned error: %v", err)
+	}
+	if !strings.Contains(output.String(), "text\n") || strings.Contains(output.String(), "binary.dat") {
+		t.Fatalf("unexpected binary filtering output: %q", output.String())
+	}
+	if !strings.Contains(stderr.String(), "Skipping (binary content)") {
+		t.Fatalf("missing binary skip diagnostic: %q", stderr.String())
+	}
+}
+
 type failingWriter struct{}
 
 func (failingWriter) Write([]byte) (int, error) {
 	return 0, io.ErrClosedPipe
+}
+
+func BenchmarkTrimTrailingNewlinesWriter(b *testing.B) {
+	data := bytes.Repeat([]byte("source line\n"), 100_000)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		writer := &trimTrailingNewlinesWriter{writer: io.Discard}
+		if _, err := writer.Write(data); err != nil {
+			b.Fatal(err)
+		}
+		if err := writer.finish(); err != nil {
+			b.Fatal(err)
+		}
+	}
 }
 
 func TestIsProbablyTextRejectsBinaryContent(t *testing.T) {

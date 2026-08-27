@@ -8,6 +8,7 @@
 - Positional `!glob` arguments exclude expanded file paths; `--exclude` remains extension-only.
 - Project workflows use `mise.toml`; multi-step build and release tasks run through `scripts/*.mjs` with ZX.
 - Symlinks are skipped; auto mode ignores Python environments and cache directories.
+- Directory walks avoid per-directory sorting, final glob results remain deterministic, and four bounded readers feed one ordered writer.
 
 ## Verification
 - Use the folder's mise.toml or README commands when present.

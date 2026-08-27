@@ -78,6 +78,7 @@ jobs:
 
           GOOS="${{ matrix.goos }}" GOARCH="${{ matrix.goarch }}" CGO_ENABLED=0 \
             go build -trimpath \
+              -pgo=auto \
               -ldflags="-s -w -X main.version=${VERSION} -X main.buildDate=${BUILD_DATE}" \
               -o "$STAGING_DIR/$BINARY_NAME" \
               ./cmd/promptcat

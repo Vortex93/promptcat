@@ -176,10 +176,7 @@ func selectAutoFiles(root string, ignoredDirs map[string]bool) ([]string, error)
 	files := make([]autoFile, 0)
 	activeStacks := map[string]bool{}
 
-	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
+	err := walkDirUnsorted(root, func(path string, entry fs.DirEntry) error {
 		if entry.Type()&os.ModeSymlink != 0 {
 			return nil
 		}
