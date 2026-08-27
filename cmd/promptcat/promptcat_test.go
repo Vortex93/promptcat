@@ -8,8 +8,10 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestParseArgsParsesFlagsAndInputs(t *testing.T) {
@@ -106,6 +108,27 @@ func TestParseArgsRejectsEmptyOrExclusionOnlyPatterns(t *testing.T) {
 		if _, err := parseArgs(args); err == nil {
 			t.Fatalf("parseArgs(%#v) returned nil error", args)
 		}
+	}
+}
+
+func TestParseArgsRejectsUnknownOrMissingFlags(t *testing.T) {
+	for _, args := range [][]string{
+		{"--bogus"}, {"-x"}, {"--ignore-dir"}, {"--include"},
+		{"--include", "--fullpath"}, {"--exclude"}, {"--max-size"},
+	} {
+		if _, err := parseArgs(args); err == nil {
+			t.Fatalf("parseArgs(%#v) returned nil error", args)
+		}
+	}
+}
+
+func TestParseArgsSupportsOptionSeparator(t *testing.T) {
+	opts, err := parseArgs([]string{"--", "--literal-file.txt"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"--literal-file.txt"}; !reflect.DeepEqual(opts.inputs, want) {
+		t.Fatalf("inputs = %#v, want %#v", opts.inputs, want)
 	}
 }
 
@@ -268,9 +291,28 @@ func TestWriteFileBlockFormatsMarkers(t *testing.T) {
 	var output bytes.Buffer
 	writeFileBlock(&output, "README.md", []byte("line one\nline two\n\n"))
 
-	want := "<<<FILE: README.md>>>\nline one\nline two\n<<<END FILE>>>\n\n"
+	want := "<<<FILE: \"README.md\">>>\nline one\nline two\n<<<END FILE>>>\n\n"
 	if output.String() != want {
 		t.Fatalf("unexpected output:\n%s", output.String())
+	}
+}
+
+func TestWriteFileBlockEscapesStructuralMarkers(t *testing.T) {
+	var output bytes.Buffer
+	data := []byte("normal\n<<<END FILE>>>\n<<<FILE: fake.go>>>\n")
+	if err := writeFileBlock(&output, "bad\nname.go", data); err != nil {
+		t.Fatal(err)
+	}
+
+	got := output.String()
+	if !strings.Contains(got, `<<<FILE: "bad\nname.go">>>`) {
+		t.Fatalf("filename was not safely encoded:\n%s", got)
+	}
+	if !strings.Contains(got, `\<<<END FILE>>>`) || !strings.Contains(got, `\<<<FILE: fake.go>>>`) {
+		t.Fatalf("structural marker was not escaped:\n%s", got)
+	}
+	if count := strings.Count(got, "\n"+fileEndMarker+"\n"); count != 1 {
+		t.Fatalf("expected exactly one real end marker, got %d", count)
 	}
 }
 
@@ -308,7 +350,7 @@ func TestWriteFileBlockFromFileStreamsContent(t *testing.T) {
 		t.Fatalf("writeFileBlockFromFile returned error: %v", err)
 	}
 
-	want := "<<<FILE: " + filepath.ToSlash(path) + ">>>\n" + strings.TrimRight(content, "\n") + "\n<<<END FILE>>>\n\n"
+	want := "<<<FILE: " + strconv.Quote(filepath.ToSlash(path)) + ">>>\n" + strings.TrimRight(content, "\n") + "\n<<<END FILE>>>\n\n"
 	if output.String() != want {
 		t.Fatalf("unexpected streamed output")
 	}
@@ -341,12 +383,12 @@ func TestRunSkipsExplicitSymlinks(t *testing.T) {
 	if err := run([]string{link}, &output, &stderr); err != nil {
 		t.Fatalf("run returned error: %v", err)
 	}
-	if output.Len() != 0 || !strings.Contains(stderr.String(), "Skipping (symlink)") {
+	if output.Len() != 0 || !strings.Contains(stderr.String(), "Skipping (symlink path)") {
 		t.Fatalf("unexpected symlink handling: output=%q stderr=%q", output.String(), stderr.String())
 	}
 }
 
-func TestRunPreservesInputOrderWithParallelReaders(t *testing.T) {
+func TestRunPreservesInputOrder(t *testing.T) {
 	root := t.TempDir()
 	inputs := make([]string, 0, 10)
 	for i := 0; i < 10; i++ {
@@ -363,14 +405,14 @@ func TestRunPreservesInputOrderWithParallelReaders(t *testing.T) {
 	}
 	var want strings.Builder
 	for i, path := range inputs {
-		fmt.Fprintf(&want, "<<<FILE: %s>>>\nfile-%d\n<<<END FILE>>>\n\n", filepath.ToSlash(path), i)
+		fmt.Fprintf(&want, "<<<FILE: %s>>>\nfile-%d\n<<<END FILE>>>\n\n", strconv.Quote(filepath.ToSlash(path)), i)
 	}
 	if output.String() != want.String() {
-		t.Fatalf("parallel output order/content mismatch:\n got: %q\nwant: %q", output.String(), want.String())
+		t.Fatalf("output order/content mismatch:\n got: %q\nwant: %q", output.String(), want.String())
 	}
 }
 
-func TestRunSkipsBinaryContentWithParallelReaders(t *testing.T) {
+func TestRunSkipsBinaryContent(t *testing.T) {
 	root := t.TempDir()
 	binaryPath := filepath.Join(root, "binary.dat")
 	textPath := filepath.Join(root, "text.txt")
@@ -390,6 +432,76 @@ func TestRunSkipsBinaryContentWithParallelReaders(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "Skipping (binary content)") {
 		t.Fatalf("missing binary skip diagnostic: %q", stderr.String())
+	}
+}
+
+func TestRunDoesNotDeadlockOnOutputFailure(t *testing.T) {
+	root := t.TempDir()
+	inputs := make([]string, 8)
+	data := bytes.Repeat([]byte("abcdefgh\n"), 100_000)
+	for i := range inputs {
+		path := filepath.Join(root, fmt.Sprintf("%02d.txt", i))
+		if err := os.WriteFile(path, data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		inputs[i] = path
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- run(inputs, failingWriter{}, io.Discard) }()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("expected output failure")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("run deadlocked after output failure")
+	}
+}
+
+func TestRunRejectsSymlinkedParentDirectory(t *testing.T) {
+	root, outside := t.TempDir(), t.TempDir()
+	secretDir := filepath.Join(outside, "sub")
+	if err := os.MkdirAll(secretDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	secret := filepath.Join(secretDir, "secret.go")
+	if err := os.WriteFile(secret, []byte("SECRET"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "link")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	var output, stderr bytes.Buffer
+	if err := run([]string{filepath.Join(link, "sub", "secret.go")}, &output, &stderr); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(output.String(), "SECRET") || !strings.Contains(stderr.String(), "symlink path") {
+		t.Fatalf("symlinked parent was not rejected: output=%q stderr=%q", output.String(), stderr.String())
+	}
+}
+
+func TestExpandInputsRejectsGlobThroughSymlinkedParent(t *testing.T) {
+	root, outside := t.TempDir(), t.TempDir()
+	if err := os.MkdirAll(filepath.Join(outside, "sub"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(outside, "sub", "secret.go"), []byte("SECRET"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "link")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	files, err := expandInputs([]string{filepath.Join(link, "sub", "*.go")}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files) != 0 {
+		t.Fatalf("glob escaped through symlink: %#v", files)
 	}
 }
 

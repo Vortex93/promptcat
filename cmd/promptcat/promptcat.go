@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -12,7 +13,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
 )
 
 var version = "0.1.2"
@@ -104,6 +104,29 @@ func isIgnored(path string, ignored map[string]bool) bool {
 	return false
 }
 
+func pathContainsSymlink(path string) (bool, error) {
+	current, err := filepath.Abs(path)
+	if err != nil {
+		return false, err
+	}
+	current = filepath.Clean(current)
+
+	for {
+		info, err := os.Lstat(current)
+		if err != nil {
+			return false, err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return true, nil
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return false, nil
+		}
+		current = parent
+	}
+}
+
 func isProbablyText(data []byte) bool {
 	if len(data) == 0 {
 		return true
@@ -165,16 +188,20 @@ func parseArgs(args []string) (options, error) {
 		case arg == "--fullpath" || arg == "fullpath":
 			opts.fullPath = true
 
+		case arg == "--":
+			opts.inputs = append(opts.inputs, args[i+1:]...)
+			i = len(args)
+
 		case arg == "--include":
 			i++
-			if i >= len(args) {
+			if i >= len(args) || strings.HasPrefix(args[i], "-") {
 				return opts, flagError("missing value for --include")
 			}
 			opts.include = parseExts(args[i])
 
 		case arg == "--exclude":
 			i++
-			if i >= len(args) {
+			if i >= len(args) || strings.HasPrefix(args[i], "-") {
 				return opts, flagError("missing value for --exclude")
 			}
 			opts.exclude = parseExts(args[i])
@@ -191,19 +218,28 @@ func parseArgs(args []string) (options, error) {
 			opts.maxSize = maxSize
 
 		case arg == "--ignore-dir":
-			if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
-				i++
-				opts.ignoredDirs = parseDirs(args[i])
+			i++
+			if i >= len(args) || strings.HasPrefix(args[i], "-") {
+				return opts, flagError("missing value for --ignore-dir")
 			}
+			opts.ignoredDirs = parseDirs(args[i])
 
 		case strings.HasPrefix(arg, "--include="):
-			opts.include = parseExts(strings.TrimPrefix(arg, "--include="))
+			value := strings.TrimPrefix(arg, "--include=")
+			if value == "" {
+				return opts, flagError("missing value for --include")
+			}
+			opts.include = parseExts(value)
 
 		case strings.HasPrefix(arg, "include="):
 			opts.include = parseExts(strings.TrimPrefix(arg, "include="))
 
 		case strings.HasPrefix(arg, "--exclude="):
-			opts.exclude = parseExts(strings.TrimPrefix(arg, "--exclude="))
+			value := strings.TrimPrefix(arg, "--exclude=")
+			if value == "" {
+				return opts, flagError("missing value for --exclude")
+			}
+			opts.exclude = parseExts(value)
 
 		case strings.HasPrefix(arg, "--max-size="):
 			maxSize, err := parseMaxSize(strings.TrimPrefix(arg, "--max-size="))
@@ -216,10 +252,18 @@ func parseArgs(args []string) (options, error) {
 			opts.exclude = parseExts(strings.TrimPrefix(arg, "exclude="))
 
 		case strings.HasPrefix(arg, "--ignore-dir="):
-			opts.ignoredDirs = parseDirs(strings.TrimPrefix(arg, "--ignore-dir="))
+			value := strings.TrimPrefix(arg, "--ignore-dir=")
+			if value == "" {
+				return opts, flagError("missing value for --ignore-dir")
+			}
+			opts.ignoredDirs = parseDirs(value)
 
 		case strings.HasPrefix(arg, "ignore-dir="):
-			opts.ignoredDirs = parseDirs(strings.TrimPrefix(arg, "ignore-dir="))
+			value := strings.TrimPrefix(arg, "ignore-dir=")
+			if value == "" {
+				return opts, flagError("missing value for ignore-dir")
+			}
+			opts.ignoredDirs = parseDirs(value)
 
 		case strings.HasPrefix(arg, "--fullpath="):
 			value, err := strconv.ParseBool(strings.TrimPrefix(arg, "--fullpath="))
@@ -244,6 +288,9 @@ func parseArgs(args []string) (options, error) {
 				return opts, flagError(fmt.Sprintf("invalid exclusion pattern %q: %v", pattern, err))
 			}
 			opts.excludePatterns = append(opts.excludePatterns, pattern)
+
+		case strings.HasPrefix(arg, "-"):
+			return opts, flagError(fmt.Sprintf("unknown option %q", arg))
 
 		default:
 			opts.inputs = append(opts.inputs, arg)
@@ -317,7 +364,7 @@ Options:
   !pattern              Exclude files matching a glob pattern
 
 Output format:
-  <<<FILE: path/to/file>>>
+  <<<FILE: "path/to/file">>>
   <file contents>
   <<<END FILE>>>
 
@@ -490,6 +537,13 @@ func expandInputs(inputs, excludePatterns []string, ignoredDirs map[string]bool)
 	}
 
 	for root, indexes := range byRoot {
+		containsSymlink, err := pathContainsSymlink(root)
+		if err != nil || containsSymlink {
+			for _, index := range indexes {
+				fmt.Fprintf(os.Stderr, "Skipping (symlink glob root): %s\n", globInputs[index].input)
+			}
+			continue
+		}
 		info, err := os.Lstat(root)
 		if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
 			for _, index := range indexes {
@@ -567,6 +621,35 @@ func matchesAnyPattern(path string, matchers []*regexp.Regexp) bool {
 	return false
 }
 
+func copyEscapedContent(output io.Writer, input io.Reader) error {
+	reader := bufio.NewReaderSize(input, 64*1024)
+	atLineStart := true
+
+	for {
+		chunk, err := reader.ReadSlice('\n')
+		if len(chunk) > 0 {
+			if atLineStart && (bytes.HasPrefix(chunk, []byte(fileStartMarkerPrefix)) || bytes.HasPrefix(chunk, []byte(fileEndMarker))) {
+				if _, writeErr := io.WriteString(output, "\\"); writeErr != nil {
+					return writeErr
+				}
+			}
+			if _, writeErr := output.Write(chunk); writeErr != nil {
+				return writeErr
+			}
+			atLineStart = chunk[len(chunk)-1] == '\n'
+		}
+
+		switch err {
+		case nil, bufio.ErrBufferFull:
+			continue
+		case io.EOF:
+			return nil
+		default:
+			return err
+		}
+	}
+}
+
 type trimTrailingNewlinesWriter struct {
 	writer  io.Writer
 	pending int
@@ -599,114 +682,37 @@ func (w outputWriter) Write(data []byte) (int, error) {
 	return n, nil
 }
 
-const readWorkerCount = 4
-
 type fileTask struct {
-	index int
 	input string
 	path  string
 }
 
-type fileResult struct {
-	task   fileTask
-	reader *io.PipeReader
-}
-
 func streamFiles(output io.Writer, tasks []fileTask, stderr io.Writer) error {
-	if len(tasks) == 0 {
-		return nil
-	}
-
-	workerCount := readWorkerCount
-	if len(tasks) < workerCount {
-		workerCount = len(tasks)
-	}
-	jobs := make(chan fileTask, len(tasks))
-	results := make(chan fileResult, workerCount)
-	done := make(chan struct{})
-	var workers sync.WaitGroup
-
 	for _, task := range tasks {
-		jobs <- task
-	}
-	close(jobs)
-
-	worker := func() {
-		defer workers.Done()
-		for {
-			select {
-			case <-done:
-				return
-			case task, ok := <-jobs:
-				if !ok {
-					return
-				}
-				reader, writer := io.Pipe()
-				result := fileResult{task: task, reader: reader}
-				select {
-				case <-done:
-					reader.Close()
-					writer.Close()
-					return
-				case results <- result:
-				}
-
-				select {
-				case <-done:
-					reader.Close()
-					writer.Close()
-					return
-				default:
-				}
-
-				file, err := os.Open(task.input)
-				if err == nil {
-					err = writeFileBlockFromFile(writer, task.path, file)
-					file.Close()
-				}
-				writer.CloseWithError(err)
-			}
+		file, err := os.Open(task.input)
+		if err != nil {
+			fmt.Fprintf(stderr, "Skipping (read error): %s\n", task.input)
+			continue
 		}
-	}
 
-	workers.Add(workerCount)
-	for i := 0; i < workerCount; i++ {
-		go worker()
-	}
-
-	pending := make(map[int]fileResult, workerCount)
-	next := 0
-	for received := 0; received < len(tasks); received++ {
-		result := <-results
-		pending[result.task.index] = result
-		for {
-			ordered, ok := pending[next]
-			if !ok {
-				break
-			}
-			_, err := io.Copy(output, ordered.reader)
-			ordered.reader.Close()
-			delete(pending, next)
-			if err != nil {
-				if errors.Is(err, errBinaryContent) {
-					fmt.Fprintf(stderr, "Skipping (binary content): %s\n", ordered.task.input)
-				} else if errors.As(err, new(outputError)) {
-					close(done)
-					for _, result := range pending {
-						result.reader.Close()
-					}
-					workers.Wait()
-					return fmt.Errorf("writing output for %s: %w", ordered.task.input, err)
-				} else {
-					fmt.Fprintf(stderr, "Skipping (read error): %s\n", ordered.task.input)
-				}
-			}
-			next++
+		err = writeFileBlockFromFile(output, task.path, file)
+		closeErr := file.Close()
+		if err == nil {
+			err = closeErr
 		}
+		if err == nil {
+			continue
+		}
+		if errors.Is(err, errBinaryContent) {
+			fmt.Fprintf(stderr, "Skipping (binary content): %s\n", task.input)
+			continue
+		}
+		var writeErr outputError
+		if errors.As(err, &writeErr) {
+			return fmt.Errorf("writing output for %s: %w", task.input, err)
+		}
+		fmt.Fprintf(stderr, "Skipping (read error): %s\n", task.input)
 	}
-
-	close(done)
-	workers.Wait()
 	return nil
 }
 
@@ -778,13 +784,7 @@ func (w *trimTrailingNewlinesWriter) finish() error {
 }
 
 func writeFileHeader(output io.Writer, path string) error {
-	if _, err := io.WriteString(output, fileStartMarkerPrefix); err != nil {
-		return err
-	}
-	if _, err := io.WriteString(output, filepath.ToSlash(path)); err != nil {
-		return err
-	}
-	_, err := io.WriteString(output, fileStartMarkerSuffix+"\n")
+	_, err := fmt.Fprintf(output, "%s%s%s\n", fileStartMarkerPrefix, strconv.Quote(filepath.ToSlash(path)), fileStartMarkerSuffix)
 	return err
 }
 
@@ -798,7 +798,7 @@ func writeFileBlock(output io.Writer, path string, data []byte) error {
 		return err
 	}
 	content := &trimTrailingNewlinesWriter{writer: output}
-	if _, err := content.Write(data); err != nil {
+	if err := copyEscapedContent(content, bytes.NewReader(data)); err != nil {
 		return err
 	}
 	if err := content.finish(); err != nil {
@@ -822,10 +822,7 @@ func writeFileBlockFromFile(output io.Writer, path string, file *os.File) error 
 	}
 
 	content := &trimTrailingNewlinesWriter{writer: output}
-	if _, err := content.Write(sample[:n]); err != nil {
-		return err
-	}
-	if _, err := io.Copy(content, file); err != nil {
+	if err := copyEscapedContent(content, io.MultiReader(bytes.NewReader(sample[:n]), file)); err != nil {
 		return err
 	}
 	if err := content.finish(); err != nil {
@@ -869,6 +866,16 @@ func run(cliArgs []string, stdout, stderr io.Writer) error {
 	for _, input := range args {
 		if isIgnored(input, opts.ignoredDirs) {
 			fmt.Fprintf(stderr, "Skipping (ignored dir): %s\n", input)
+			continue
+		}
+
+		containsSymlink, err := pathContainsSymlink(input)
+		if err != nil {
+			fmt.Fprintf(stderr, "Skipping (not found): %s\n", input)
+			continue
+		}
+		if containsSymlink {
+			fmt.Fprintf(stderr, "Skipping (symlink path): %s\n", input)
 			continue
 		}
 
@@ -918,7 +925,7 @@ func run(cliArgs []string, stdout, stderr io.Writer) error {
 			}
 		}
 
-		tasks = append(tasks, fileTask{index: len(tasks), input: input, path: path})
+		tasks = append(tasks, fileTask{input: input, path: path})
 	}
 	if err := streamFiles(output, tasks, stderr); err != nil {
 		return err

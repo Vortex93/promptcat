@@ -31,20 +31,27 @@ func walkDirUnsortedEntry(path string, entry fs.DirEntry, walkFn func(string, fs
 	if err != nil {
 		return err
 	}
-	defer directory.Close()
-
+	var entries []fs.DirEntry
 	for {
-		entries, err := directory.ReadDir(256)
-		for _, child := range entries {
-			if err := walkDirUnsortedEntry(filepath.Join(path, child.Name()), child, walkFn); err != nil {
-				return err
-			}
+		batch, readErr := directory.ReadDir(256)
+		entries = append(entries, batch...)
+		if readErr == io.EOF {
+			break
 		}
-		if err == io.EOF {
-			return nil
+		if readErr != nil {
+			directory.Close()
+			return readErr
 		}
-		if err != nil {
+	}
+	closeErr := directory.Close()
+	if closeErr != nil {
+		return closeErr
+	}
+
+	for _, child := range entries {
+		if err := walkDirUnsortedEntry(filepath.Join(path, child.Name()), child, walkFn); err != nil {
 			return err
 		}
 	}
+	return nil
 }

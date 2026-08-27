@@ -25,6 +25,28 @@ func TestParseArgsAcceptsUpgradeAlone(t *testing.T) {
 	}
 }
 
+func TestCompareVersions(t *testing.T) {
+	for _, tc := range []struct {
+		current string
+		latest  string
+		want    int
+	}{
+		{"0.1.0", "0.2.0", -1},
+		{"0.2.0", "0.2.0", 0},
+		{"0.3.0", "0.2.0", 1},
+		{"1.0.0", "0.99.99", 1},
+		{"1.2.3", "2.0.0", -1},
+	} {
+		got, err := compareVersions(tc.current, tc.latest)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != tc.want {
+			t.Fatalf("compareVersions(%q, %q) = %d, want %d", tc.current, tc.latest, got, tc.want)
+		}
+	}
+}
+
 func TestExtractBinaryFromTarGz(t *testing.T) {
 	binaryName := "promptcat"
 	if runtime.GOOS == "windows" {

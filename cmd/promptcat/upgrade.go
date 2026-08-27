@@ -16,6 +16,7 @@ import (
 	"path"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -41,8 +42,16 @@ func upgrade() error {
 	if !strings.HasPrefix(release.TagName, "v") {
 		return fmt.Errorf("latest release has invalid tag %q", release.TagName)
 	}
-	if strings.TrimPrefix(release.TagName, "v") == version {
+	comparison, err := compareVersions(version, release.TagName)
+	if err != nil {
+		return err
+	}
+	if comparison == 0 {
 		fmt.Printf("promptcat %s is already latest.\n", version)
+		return nil
+	}
+	if comparison > 0 {
+		fmt.Printf("promptcat %s is newer than latest release %s; refusing downgrade.\n", version, release.TagName)
 		return nil
 	}
 
@@ -85,6 +94,45 @@ func upgrade() error {
 		fmt.Printf("Upgraded promptcat to %s.\n", release.TagName)
 	}
 	return nil
+}
+
+func parseStableVersion(value string) ([3]uint64, error) {
+	value = strings.TrimPrefix(value, "v")
+	parts := strings.Split(value, ".")
+	if len(parts) != 3 {
+		return [3]uint64{}, fmt.Errorf("invalid version %q", value)
+	}
+
+	var result [3]uint64
+	for i, part := range parts {
+		number, err := strconv.ParseUint(part, 10, 64)
+		if err != nil {
+			return [3]uint64{}, fmt.Errorf("invalid version %q", value)
+		}
+		result[i] = number
+	}
+	return result, nil
+}
+
+func compareVersions(a, b string) (int, error) {
+	left, err := parseStableVersion(a)
+	if err != nil {
+		return 0, err
+	}
+	right, err := parseStableVersion(b)
+	if err != nil {
+		return 0, err
+	}
+
+	for i := range left {
+		if left[i] < right[i] {
+			return -1, nil
+		}
+		if left[i] > right[i] {
+			return 1, nil
+		}
+	}
+	return 0, nil
 }
 
 func fetchLatestRelease() (githubRelease, error) {

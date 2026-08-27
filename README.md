@@ -11,7 +11,7 @@
 It is designed for the common workflow of collecting a focused slice of a repository and pasting it into ChatGPT, Claude, Copilot Chat, or another LLM without manually opening and copying files one by one.
 
 ```text
-<<<FILE: cmd/promptcat/promptcat.go>>>
+<<<FILE: "cmd/promptcat/promptcat.go">>>
 package main
 ...
 <<<END FILE>>>
@@ -179,7 +179,7 @@ Notes:
 - Binary files are skipped automatically
 - Symbolic links are skipped automatically
 - Directory traversal is unsorted internally, then results are sorted once for deterministic output
-- File reads use four bounded workers while output order stays deterministic
+- Files stream serially to preserve deterministic output and immediate error handling
 - `auto` cannot be combined with explicit file paths or glob patterns
 - `--upgrade` downloads the matching release archive, verifies its checksum, and replaces the current executable
 - `!pattern` exclusions apply after all positive paths and glob patterns expand
@@ -224,7 +224,7 @@ Supported pattern features:
 Each file is wrapped in markers:
 
 ```text
-<<<FILE: path/to/file>>>
+<<<FILE: "path/to/file">>>
 <file contents>
 <<<END FILE>>>
 ```
@@ -252,7 +252,7 @@ go test ./...
 go install ./cmd/promptcat
 ```
 
-`mise run build` uses `default.pgo` automatically when that profile is present; otherwise it builds without PGO. Release builds use Go's `-pgo=auto` mode.
+`mise run build` uses `default.pgo` automatically when that profile is present; otherwise it builds without PGO. It creates native and opposite-platform binaries; release builds use Go's `-pgo=auto` mode.
 
 Continuous integration runs the build and test workflow on Windows, macOS, and Linux.
 
