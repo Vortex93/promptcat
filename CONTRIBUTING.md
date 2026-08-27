@@ -2,7 +2,7 @@
 
 ## Development Setup
 
-- Install Go `1.26` or newer
+- Install Go `1.27` or newer
 - Clone the repository
 - Run `go test ./...` before opening a pull request
 

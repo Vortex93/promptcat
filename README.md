@@ -30,7 +30,7 @@ package main
 `promptcat` currently installs from source with Go.
 
 Requirements:
-- Go `1.26` or newer
+- Go `1.27` or newer
 
 ### Windows
 
