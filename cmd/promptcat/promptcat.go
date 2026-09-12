@@ -15,7 +15,7 @@ import (
 	"strings"
 )
 
-var version = "0.1.2"
+var version = "0.1.4"
 var buildDate = "dev"
 
 var binaryExtensions = map[string]bool{
@@ -172,6 +172,7 @@ type options struct {
 	autocompleteInstall bool
 	autocompleteShell   string
 	archiveFiles        bool
+	archiveClipboard    bool
 	clipboard           bool
 	upgrade             bool
 	fullPath            bool
@@ -264,6 +265,9 @@ func parseArgs(args []string) (options, error) {
 
 		case arg == "--files":
 			opts.archiveFiles = true
+
+		case arg == "--clipboard":
+			opts.archiveClipboard = true
 
 		case arg == "--exclude":
 			i++
@@ -394,6 +398,9 @@ func parseArgs(args []string) (options, error) {
 		}
 		if len(opts.inputs) > 1 {
 			return opts, flagError("archive accepts at most one folder")
+		}
+		if opts.archiveFiles && opts.archiveClipboard {
+			return opts, flagError("archive --clipboard cannot be combined with --files")
 		}
 		if opts.archiveOutput == "" {
 			opts.archiveOutput = "archive.tar.zst"

@@ -158,6 +158,12 @@ promptcat archive --pattern=**.js,**.ts --output=source.tar.zst
 promptcat archive --max-size=10MB
 ```
 
+Create the archive and copy the generated `.tar.zst` file to the system clipboard as a file:
+
+```bash
+promptcat archive --clipboard
+```
+
 Copy Promptcat output directly to the system clipboard. With no inputs, it uses the same source-file defaults, exclusions, and size limit as `archive`:
 
 ```bash
@@ -208,6 +214,7 @@ Directories passed directly are skipped.
 | `--output=source.tar.zst` | Set the archive output path |
 | `--max-size=1MB` | Set the maximum archive file size; defaults to 1 MiB for archives |
 | `--files` | Store matching files separately instead of generating `export.txt` |
+| `--clipboard` | Also copy the generated archive file to the clipboard; cannot be combined with `--files` |
 | `autocomplete [shell]` | Print completion for Bash, Fish, Zsh, or PowerShell |
 | `autocomplete install [shell]` | Install completion, detecting the current shell when omitted |
 | `--exclude=json,lock` | Exclude these extensions |
@@ -284,7 +291,7 @@ mise run setup
 mise run build
 mise run test
 mise run install
-mise run release VERSION=0.1.3
+mise run release VERSION=0.1.4
 ```
 
 Direct Go commands work as well:
@@ -308,10 +315,10 @@ Continuous integration runs the build and test workflow on Windows, macOS, and L
 To publish a new GitHub release, push a semantic version tag:
 
 ```bash
-mise run release VERSION=0.1.3
+mise run release VERSION=0.1.4
 ```
 
-That task runs tests, creates the `v0.1.3` tag, and pushes it to GitHub.
+That task runs tests, creates the `v0.1.4` tag, and pushes it to GitHub.
 The GitHub Actions release workflow then builds the binaries and publishes the release assets from GitHub-hosted runners.
 
 ## Contributing

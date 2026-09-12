@@ -149,6 +149,12 @@ func runArchive(opts options, stderr io.Writer) error {
 	if err := writeTarZst(outputPath, temporaryDirectory, []string{"export.txt"}); err != nil {
 		return err
 	}
+	if opts.archiveClipboard {
+		if err := copyFileToClipboard(outputPath); err != nil {
+			return err
+		}
+		fmt.Fprintln(stderr, "Copied archive file to the clipboard")
+	}
 	fmt.Fprintf(stderr, "Archived %d files as export.txt to %s\n", len(files), outputPath)
 	return nil
 }

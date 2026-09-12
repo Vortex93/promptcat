@@ -94,6 +94,17 @@ func TestParseArgsArchivePatterns(t *testing.T) {
 	if !opts.archiveFiles {
 		t.Fatal("parseArgs(--files) did not enable file-based archives")
 	}
+
+	opts, err = parseArgs([]string{"archive", "--clipboard"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !opts.archiveClipboard {
+		t.Fatal("parseArgs(--clipboard) did not enable archive clipboard output")
+	}
+	if _, err := parseArgs([]string{"archive", "--files", "--clipboard"}); err == nil {
+		t.Fatal("archive accepted incompatible --files and --clipboard")
+	}
 }
 
 func TestDefaultArchivePatternsCoverSupportedFiles(t *testing.T) {
