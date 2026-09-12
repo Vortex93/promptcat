@@ -104,12 +104,22 @@ func isIgnored(path string, ignored map[string]bool) bool {
 	return false
 }
 
-func pathContainsSymlink(path string) (bool, error) {
+func pathContainsSymlink(path, boundary string) (bool, error) {
 	current, err := filepath.Abs(path)
 	if err != nil {
 		return false, err
 	}
 	current = filepath.Clean(current)
+	boundary, err = filepath.Abs(boundary)
+	if err != nil {
+		boundary = ""
+	}
+	boundary = filepath.Clean(boundary)
+	withinBoundary := false
+	if boundary != "" {
+		relative, relErr := filepath.Rel(boundary, current)
+		withinBoundary = relErr == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))
+	}
 
 	for {
 		info, err := os.Lstat(current)
@@ -118,6 +128,9 @@ func pathContainsSymlink(path string) (bool, error) {
 		}
 		if info.Mode()&os.ModeSymlink != 0 {
 			return true, nil
+		}
+		if withinBoundary && current == boundary {
+			return false, nil
 		}
 		parent := filepath.Dir(current)
 		if parent == current {
@@ -154,10 +167,14 @@ func isProbablyText(data []byte) bool {
 
 type options struct {
 	auto            bool
+	archive         bool
 	upgrade         bool
 	fullPath        bool
 	maxSize         int64
 	include         map[string]bool
+	archiveIncludes []string
+	archivePatterns []string
+	archiveOutput   string
 	exclude         map[string]bool
 	ignoredDirs     map[string]bool
 	inputs          []string
@@ -166,6 +183,12 @@ type options struct {
 
 func parseArgs(args []string) (options, error) {
 	var opts options
+	for _, arg := range args {
+		if arg == "archive" {
+			opts.archive = true
+			break
+		}
+	}
 
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
@@ -182,6 +205,9 @@ func parseArgs(args []string) (options, error) {
 		case arg == "auto":
 			opts.auto = true
 
+		case arg == "archive":
+			opts.archive = true
+
 		case arg == "--upgrade":
 			opts.upgrade = true
 
@@ -197,7 +223,25 @@ func parseArgs(args []string) (options, error) {
 			if i >= len(args) || strings.HasPrefix(args[i], "-") {
 				return opts, flagError("missing value for --include")
 			}
-			opts.include = parseExts(args[i])
+			if opts.archive {
+				opts.archiveIncludes = append(opts.archiveIncludes, splitPatterns(args[i])...)
+			} else {
+				opts.include = parseExts(args[i])
+			}
+
+		case arg == "--pattern":
+			i++
+			if i >= len(args) || strings.HasPrefix(args[i], "-") {
+				return opts, flagError("missing value for --pattern")
+			}
+			opts.archivePatterns = splitPatterns(args[i])
+
+		case arg == "--output":
+			i++
+			if i >= len(args) || strings.HasPrefix(args[i], "-") {
+				return opts, flagError("missing value for --output")
+			}
+			opts.archiveOutput = args[i]
 
 		case arg == "--exclude":
 			i++
@@ -229,7 +273,25 @@ func parseArgs(args []string) (options, error) {
 			if value == "" {
 				return opts, flagError("missing value for --include")
 			}
-			opts.include = parseExts(value)
+			if opts.archive {
+				opts.archiveIncludes = append(opts.archiveIncludes, splitPatterns(value)...)
+			} else {
+				opts.include = parseExts(value)
+			}
+
+		case strings.HasPrefix(arg, "--pattern="):
+			value := strings.TrimPrefix(arg, "--pattern=")
+			if value == "" {
+				return opts, flagError("missing value for --pattern")
+			}
+			opts.archivePatterns = splitPatterns(value)
+
+		case strings.HasPrefix(arg, "--output="):
+			value := strings.TrimPrefix(arg, "--output=")
+			if value == "" {
+				return opts, flagError("missing value for --output")
+			}
+			opts.archiveOutput = value
 
 		case strings.HasPrefix(arg, "include="):
 			opts.include = parseExts(strings.TrimPrefix(arg, "include="))
@@ -297,6 +359,34 @@ func parseArgs(args []string) (options, error) {
 		}
 	}
 
+	if opts.archive {
+		if opts.auto || opts.upgrade || opts.fullPath || opts.exclude != nil || len(opts.excludePatterns) > 0 {
+			return opts, flagError("archive cannot be combined with auto, upgrade, fullpath, or exclude options")
+		}
+		if len(opts.inputs) > 1 {
+			return opts, flagError("archive accepts at most one folder")
+		}
+		if opts.archiveOutput == "" {
+			opts.archiveOutput = "archive.tar.zst"
+		}
+		if opts.maxSize == 0 {
+			opts.maxSize = defaultArchiveMaxSize
+		}
+		if len(opts.archivePatterns) == 0 {
+			opts.archivePatterns = append([]string(nil), defaultArchivePatterns...)
+		}
+		opts.archivePatterns = append(opts.archivePatterns, opts.archiveIncludes...)
+		for _, pattern := range opts.archivePatterns {
+			if pattern == "" {
+				return opts, flagError("archive patterns cannot be empty")
+			}
+			if _, err := globToRegex(pattern); err != nil {
+				return opts, flagError(fmt.Sprintf("invalid archive pattern %q: %v", pattern, err))
+			}
+		}
+		return opts, nil
+	}
+
 	if opts.upgrade && (opts.auto || len(opts.inputs) > 0 || len(opts.excludePatterns) > 0 || opts.include != nil || opts.exclude != nil || opts.ignoredDirs != nil || opts.fullPath || opts.maxSize > 0) {
 		return opts, flagError("--upgrade cannot be combined with other options or inputs")
 	}
@@ -308,6 +398,16 @@ func parseArgs(args []string) (options, error) {
 	}
 
 	return opts, nil
+}
+
+func splitPatterns(value string) []string {
+	patterns := make([]string, 0)
+	for _, pattern := range strings.Split(value, ",") {
+		if pattern = strings.TrimSpace(pattern); pattern != "" {
+			patterns = append(patterns, pattern)
+		}
+	}
+	return patterns
 }
 
 func flagError(message string) error {
@@ -351,6 +451,7 @@ func usage() string {
 Usage:
   promptcat [options] <files...>
   promptcat auto [options]
+  promptcat archive [options] [folder]
 
 Options:
   --help, -h            Show help
@@ -359,6 +460,9 @@ Options:
   --max-size=1MB        Skip files larger than this size
   --fullpath            Output absolute file paths
   --include=go,md       Include only specific extensions
+	--pattern=**.go,**.ts  Replace archive's default glob patterns
+	--output=archive.tar.zst
+	                        Archive output path
   --exclude=json        Exclude extensions
 	--ignore-dir=name     Ignore directories by name
   !pattern              Exclude files matching a glob pattern
@@ -373,6 +477,9 @@ Examples:
   promptcat "**/*.md" "!**/excluded/*.md"
   promptcat --include=go,md --ignore-dir=.git,node_modules "**/*"
   promptcat auto
+  promptcat archive
+  promptcat archive --include=**.json src
+  promptcat archive --pattern=**.js,**.ts --output=src.tar.zst
 `
 }
 
@@ -506,10 +613,11 @@ func expandInputs(inputs, excludePatterns []string, ignoredDirs map[string]bool)
 	}
 
 	type globInput struct {
-		input   string
-		matcher *regexp.Regexp
-		root    string
-		index   int
+		input     string
+		matcher   *regexp.Regexp
+		extension string
+		root      string
+		index     int
 	}
 	type globMatch struct {
 		inputIndex int
@@ -522,12 +630,17 @@ func expandInputs(inputs, excludePatterns []string, ignoredDirs map[string]bool)
 			continue
 		}
 
-		matcher, err := globToRegex(input)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Skipping (bad pattern): %s\n", input)
-			continue
+		extension := simpleExtensionGlob(input)
+		var matcher *regexp.Regexp
+		if extension == "" {
+			var err error
+			matcher, err = globToRegex(input)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Skipping (bad pattern): %s\n", input)
+				continue
+			}
 		}
-		globInputs = append(globInputs, globInput{input: input, matcher: matcher, root: globRoot(input), index: i})
+		globInputs = append(globInputs, globInput{input: input, matcher: matcher, extension: extension, root: globRoot(input), index: i})
 	}
 
 	globMatches := make([]globMatch, 0)
@@ -537,7 +650,7 @@ func expandInputs(inputs, excludePatterns []string, ignoredDirs map[string]bool)
 	}
 
 	for root, indexes := range byRoot {
-		containsSymlink, err := pathContainsSymlink(root)
+		containsSymlink, err := pathContainsSymlink(root, ".")
 		if err != nil || containsSymlink {
 			for _, index := range indexes {
 				fmt.Fprintf(os.Stderr, "Skipping (symlink glob root): %s\n", globInputs[index].input)
@@ -552,6 +665,16 @@ func expandInputs(inputs, excludePatterns []string, ignoredDirs map[string]bool)
 			continue
 		}
 
+		extensions := make(map[string][]int)
+		complexIndexes := make([]int, 0, len(indexes))
+		for _, index := range indexes {
+			if extension := globInputs[index].extension; extension != "" {
+				extensions[extension] = append(extensions[extension], index)
+			} else {
+				complexIndexes = append(complexIndexes, index)
+			}
+		}
+
 		err = walkDirUnsorted(root, func(path string, entry fs.DirEntry) error {
 			if entry.Type()&os.ModeSymlink != 0 {
 				return nil
@@ -562,9 +685,15 @@ func expandInputs(inputs, excludePatterns []string, ignoredDirs map[string]bool)
 				}
 				return nil
 			}
+			if entry.Type()&os.ModeType != 0 {
+				return nil
+			}
 
 			trimmedPath := trimDotSlash(path)
-			for _, index := range indexes {
+			for _, index := range extensions[filepath.Ext(trimmedPath)] {
+				globMatches = append(globMatches, globMatch{inputIndex: globInputs[index].index, path: path})
+			}
+			for _, index := range complexIndexes {
 				if globInputs[index].matcher.MatchString(trimmedPath) {
 					globMatches = append(globMatches, globMatch{inputIndex: globInputs[index].index, path: path})
 				}
@@ -611,6 +740,19 @@ func expandInputs(inputs, excludePatterns []string, ignoredDirs map[string]bool)
 	return expanded, nil
 }
 
+func simpleExtensionGlob(pattern string) string {
+	pattern = trimDotSlash(pattern)
+	if !strings.HasPrefix(pattern, "**.") {
+		return ""
+	}
+
+	extension := pattern[2:]
+	if strings.ContainsAny(extension, "*?[]/") || strings.Contains(extension[1:], ".") {
+		return ""
+	}
+	return extension
+}
+
 func matchesAnyPattern(path string, matchers []*regexp.Regexp) bool {
 	for _, matcher := range matchers {
 		if matcher.MatchString(path) {
@@ -621,22 +763,142 @@ func matchesAnyPattern(path string, matchers []*regexp.Regexp) bool {
 	return false
 }
 
+const contentReaderSize = 64 * 1024
+
+var newlineChunk = func() [256]byte {
+	var buffer [256]byte
+	for i := range buffer {
+		buffer[i] = '\n'
+	}
+	return buffer
+}()
+
+var structuralMarkerPrefixes = [][]byte{
+	[]byte(fileStartMarkerPrefix),
+	[]byte(fileEndMarker),
+}
+
+const maxStructuralMarkerPrefixLength = len(fileEndMarker)
+
+func isPartialStructuralMarker(data []byte) bool {
+	for _, marker := range structuralMarkerPrefixes {
+		if len(data) < len(marker) && bytes.Equal(data, marker[:len(data)]) {
+			return true
+		}
+	}
+	return false
+}
+
 func copyEscapedContent(output io.Writer, input io.Reader) error {
-	reader := bufio.NewReaderSize(input, 64*1024)
+	return copyEscapedContentWithReader(output, input, bufio.NewReaderSize(input, contentReaderSize))
+}
+
+func copyEscapedContentWithReader(output io.Writer, input io.Reader, reader *bufio.Reader) error {
+	reader.Reset(input)
 	atLineStart := true
+	var pending [maxStructuralMarkerPrefixLength]byte
+	pendingLen := 0
 
 	for {
 		chunk, err := reader.ReadSlice('\n')
-		if len(chunk) > 0 {
-			if atLineStart && (bytes.HasPrefix(chunk, []byte(fileStartMarkerPrefix)) || bytes.HasPrefix(chunk, []byte(fileEndMarker))) {
+		if pendingLen > 0 {
+			var combined [2 * maxStructuralMarkerPrefixLength]byte
+			copy(combined[:], pending[:pendingLen])
+			copied := len(chunk)
+			if copied > maxStructuralMarkerPrefixLength {
+				copied = maxStructuralMarkerPrefixLength
+			}
+			copy(combined[pendingLen:], chunk[:copied])
+			combinedLen := pendingLen + copied
+
+			markerLen := 0
+			for _, marker := range structuralMarkerPrefixes {
+				if combinedLen >= len(marker) && bytes.HasPrefix(combined[:combinedLen], marker) {
+					markerLen = len(marker)
+					break
+				}
+			}
+			if markerLen > 0 {
 				if _, writeErr := io.WriteString(output, "\\"); writeErr != nil {
 					return writeErr
 				}
+				markerChunkLen := markerLen - pendingLen
+				if _, writeErr := output.Write(pending[:pendingLen]); writeErr != nil {
+					return writeErr
+				}
+				if _, writeErr := output.Write(chunk[:markerChunkLen]); writeErr != nil {
+					return writeErr
+				}
+				pendingLen = 0
+				atLineStart = false
+				chunk = chunk[markerChunkLen:]
+			} else if err != bufio.ErrBufferFull || !isPartialStructuralMarker(combined[:combinedLen]) {
+				if _, writeErr := output.Write(pending[:pendingLen]); writeErr != nil {
+					return writeErr
+				}
+				pendingLen = 0
+				atLineStart = true
+			} else {
+				copy(pending[:], combined[:combinedLen])
+				pendingLen = combinedLen
+				continue
 			}
-			if _, writeErr := output.Write(chunk); writeErr != nil {
+		}
+
+		start := 0
+		for i := 0; i < len(chunk); {
+			if atLineStart {
+				markerLen := 0
+				for _, marker := range structuralMarkerPrefixes {
+					if len(chunk)-i >= len(marker) && bytes.HasPrefix(chunk[i:], marker) {
+						markerLen = len(marker)
+						break
+					}
+				}
+				if markerLen > 0 {
+					if i > start {
+						if _, writeErr := output.Write(chunk[start:i]); writeErr != nil {
+							return writeErr
+						}
+					}
+					if _, writeErr := io.WriteString(output, "\\"); writeErr != nil {
+						return writeErr
+					}
+					start = i
+					atLineStart = false
+				}
+			}
+
+			if atLineStart && err == bufio.ErrBufferFull && len(chunk)-i < maxStructuralMarkerPrefixLength {
+				partial := false
+				for _, marker := range structuralMarkerPrefixes {
+					if len(chunk)-i < len(marker) && bytes.Equal(chunk[i:], marker[:len(chunk)-i]) {
+						partial = true
+						break
+					}
+				}
+				if partial {
+					if i > start {
+						if _, writeErr := output.Write(chunk[start:i]); writeErr != nil {
+							return writeErr
+						}
+					}
+					copy(pending[:], chunk[i:])
+					pendingLen = len(chunk) - i
+					break
+				}
+			}
+
+			atLineStart = chunk[i] == '\n' || chunk[i] == '\r'
+			i++
+		}
+		if pendingLen > 0 {
+			continue
+		}
+		if start < len(chunk) {
+			if _, writeErr := output.Write(chunk[start:]); writeErr != nil {
 				return writeErr
 			}
-			atLineStart = chunk[len(chunk)-1] == '\n'
 		}
 
 		switch err {
@@ -688,6 +950,7 @@ type fileTask struct {
 }
 
 func streamFiles(output io.Writer, tasks []fileTask, stderr io.Writer) error {
+	reader := bufio.NewReaderSize(strings.NewReader(""), contentReaderSize)
 	for _, task := range tasks {
 		file, err := os.Open(task.input)
 		if err != nil {
@@ -695,7 +958,7 @@ func streamFiles(output io.Writer, tasks []fileTask, stderr io.Writer) error {
 			continue
 		}
 
-		err = writeFileBlockFromFile(output, task.path, file)
+		err = writeFileBlockFromFileWithReader(output, task.path, file, reader)
 		closeErr := file.Close()
 		if err == nil {
 			err = closeErr
@@ -762,10 +1025,7 @@ func (w *trimTrailingNewlinesWriter) flush(data []byte) error {
 }
 
 func (w *trimTrailingNewlinesWriter) flushNewlines() error {
-	var newlines [256]byte
-	for i := range newlines {
-		newlines[i] = '\n'
-	}
+	newlines := newlineChunk[:]
 	for w.pending > 0 {
 		n := w.pending
 		if n > len(newlines) {
@@ -808,6 +1068,10 @@ func writeFileBlock(output io.Writer, path string, data []byte) error {
 }
 
 func writeFileBlockFromFile(output io.Writer, path string, file *os.File) error {
+	return writeFileBlockFromFileWithReader(output, path, file, nil)
+}
+
+func writeFileBlockFromFileWithReader(output io.Writer, path string, file *os.File, reader *bufio.Reader) error {
 	const sampleSize = 8000
 	var sample [sampleSize]byte
 	n, err := io.ReadFull(file, sample[:])
@@ -822,7 +1086,10 @@ func writeFileBlockFromFile(output io.Writer, path string, file *os.File) error 
 	}
 
 	content := &trimTrailingNewlinesWriter{writer: output}
-	if err := copyEscapedContent(content, io.MultiReader(bytes.NewReader(sample[:n]), file)); err != nil {
+	if reader == nil {
+		reader = bufio.NewReaderSize(file, contentReaderSize)
+	}
+	if err := copyEscapedContentWithReader(content, io.MultiReader(bytes.NewReader(sample[:n]), file), reader); err != nil {
 		return err
 	}
 	if err := content.finish(); err != nil {
@@ -841,6 +1108,9 @@ func run(cliArgs []string, stdout, stderr io.Writer) error {
 			return fmt.Errorf("Upgrade failed: %w", err)
 		}
 		return nil
+	}
+	if opts.archive {
+		return runArchive(opts, stderr)
 	}
 
 	var args []string
@@ -869,7 +1139,7 @@ func run(cliArgs []string, stdout, stderr io.Writer) error {
 			continue
 		}
 
-		containsSymlink, err := pathContainsSymlink(input)
+		containsSymlink, err := pathContainsSymlink(input, ".")
 		if err != nil {
 			fmt.Fprintf(stderr, "Skipping (not found): %s\n", input)
 			continue
@@ -892,6 +1162,10 @@ func run(cliArgs []string, stdout, stderr io.Writer) error {
 
 		if info.IsDir() {
 			fmt.Fprintf(stderr, "Skipping (directory): %s\n", input)
+			continue
+		}
+		if !info.Mode().IsRegular() {
+			fmt.Fprintf(stderr, "Skipping (not regular): %s\n", input)
 			continue
 		}
 

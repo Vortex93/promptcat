@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"fmt"
 	"io"
@@ -50,6 +51,56 @@ func TestParseArgsParsesFlagsAndInputs(t *testing.T) {
 
 	if !reflect.DeepEqual(opts.excludePatterns, []string{"**/generated/**"}) {
 		t.Fatalf("unexpected exclusion patterns: %#v", opts.excludePatterns)
+	}
+}
+
+func TestParseArgsArchivePatterns(t *testing.T) {
+	opts, err := parseArgs([]string{"archive", "--include=**.json, **.yaml"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := append(append([]string(nil), defaultArchivePatterns...), "**.json", "**.yaml")
+	if !reflect.DeepEqual(opts.archivePatterns, want) {
+		t.Fatalf("archivePatterns = %#v, want %#v", opts.archivePatterns, want)
+	}
+	if opts.maxSize != defaultArchiveMaxSize {
+		t.Fatalf("archive maxSize = %d, want %d", opts.maxSize, defaultArchiveMaxSize)
+	}
+
+	opts, err = parseArgs([]string{"--include=**.json", "archive", "--pattern=**.go,**.rs"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want = []string{"**.go", "**.rs", "**.json"}
+	if !reflect.DeepEqual(opts.archivePatterns, want) {
+		t.Fatalf("archivePatterns = %#v, want %#v", opts.archivePatterns, want)
+	}
+	if opts.maxSize != defaultArchiveMaxSize {
+		t.Fatalf("archive maxSize = %d, want %d", opts.maxSize, defaultArchiveMaxSize)
+	}
+
+	opts, err = parseArgs([]string{"archive", "--max-size=10MB"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opts.maxSize != 10_000_000 {
+		t.Fatalf("archive maxSize = %d, want 10000000", opts.maxSize)
+	}
+}
+
+func TestDefaultArchivePatternsCoverSupportedFiles(t *testing.T) {
+	for _, extension := range []string{"js", "mjs", "jsx", "ts", "tsx", "py", "go", "rs", "css", "scss", "html", "vue", "svelte", "c", "h", "cpp", "hpp", "java", "kt", "dart", "cs", "php", "rb", "swift", "ex", "json", "yaml", "toml", "xml", "ini", "sql", "proto", "graphql", "tf", "sh", "bash", "zsh"} {
+		pattern := "**." + extension
+		found := false
+		for _, defaultPattern := range defaultArchivePatterns {
+			if defaultPattern == pattern {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("default archive patterns do not include %s", pattern)
+		}
 	}
 }
 
@@ -216,6 +267,28 @@ func TestExpandInputMatchesAbsoluteGlob(t *testing.T) {
 	}
 }
 
+func TestExpandInputsUsesSimpleExtensionGlob(t *testing.T) {
+	root := t.TempDir()
+	writeAutoFiles(t, root, map[string]string{
+		"top.go":         "package top\n",
+		"nested/file.go": "package nested\n",
+		"other.txt":      "text\n",
+	})
+	t.Chdir(root)
+
+	if got := simpleExtensionGlob("**.go"); got != ".go" {
+		t.Fatalf("simpleExtensionGlob = %q, want .go", got)
+	}
+	files, err := expandInputs([]string{"**.go"}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"nested/file.go", "top.go"}
+	if !reflect.DeepEqual(files, want) {
+		t.Fatalf("expandInputs = %#v, want %#v", files, want)
+	}
+}
+
 func TestExpandInputsExcludesMatchingPatterns(t *testing.T) {
 	root := t.TempDir()
 	writeFile := func(path string) {
@@ -313,6 +386,41 @@ func TestWriteFileBlockEscapesStructuralMarkers(t *testing.T) {
 	}
 	if count := strings.Count(got, "\n"+fileEndMarker+"\n"); count != 1 {
 		t.Fatalf("expected exactly one real end marker, got %d", count)
+	}
+}
+
+func TestWriteFileBlockEscapesMarkersAfterCR(t *testing.T) {
+	var output bytes.Buffer
+	data := []byte("normal\r<<<END FILE>>>\r<<<FILE: fake.go>>>\r")
+	if err := writeFileBlock(&output, "file.txt", data); err != nil {
+		t.Fatal(err)
+	}
+	got := output.String()
+	if !strings.Contains(got, `\<<<END FILE>>>`) || !strings.Contains(got, `\<<<FILE: fake.go>>>`) {
+		t.Fatalf("markers after CR were not escaped: %q", got)
+	}
+}
+
+func TestCopyEscapedContentHandlesMarkerChunkBoundaries(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		data string
+		want string
+	}{
+		{name: "marker", data: "<<<END FILE>>>\rtext", want: "\\<<<END FILE>>>\rtext"},
+		{name: "marker after CR", data: "text\r<<<END FILE>>>", want: "text\r\\<<<END FILE>>>"},
+		{name: "non-marker", data: "<<<FILEx\rtext", want: "<<<FILEx\rtext"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var output bytes.Buffer
+			reader := bufio.NewReaderSize(strings.NewReader(tc.data), 16)
+			if err := copyEscapedContentWithReader(&output, strings.NewReader(tc.data), reader); err != nil {
+				t.Fatal(err)
+			}
+			if got := output.String(); got != tc.want {
+				t.Fatalf("copyEscapedContent = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 
@@ -520,6 +628,42 @@ func BenchmarkTrimTrailingNewlinesWriter(b *testing.B) {
 			b.Fatal(err)
 		}
 		if err := writer.finish(); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkTrimTrailingNewlinesWriterChunked(b *testing.B) {
+	line := []byte("source line\n")
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		writer := &trimTrailingNewlinesWriter{writer: io.Discard}
+		for j := 0; j < 1000; j++ {
+			if _, err := writer.Write(line); err != nil {
+				b.Fatal(err)
+			}
+		}
+		if err := writer.finish(); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkStreamFilesSmallFiles(b *testing.B) {
+	root := b.TempDir()
+	content := []byte("package example\n\nfunc Value() int { return 42 }\n")
+	tasks := make([]fileTask, 1000)
+	for i := range tasks {
+		path := filepath.Join(root, fmt.Sprintf("file-%04d.go", i))
+		if err := os.WriteFile(path, content, 0o600); err != nil {
+			b.Fatal(err)
+		}
+		tasks[i] = fileTask{input: path, path: path}
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if err := streamFiles(io.Discard, tasks, io.Discard); err != nil {
 			b.Fatal(err)
 		}
 	}

@@ -24,6 +24,7 @@ package main
 - Filter inputs with `--include`, `--exclude`, `--ignore-dir`, and positional `!pattern` exclusions
 - Skip binary files automatically by extension and content detection
 - Output relative paths by default or absolute paths with `--fullpath`
+- Create deterministic TAR + Zstandard archives with `promptcat archive`
 
 ## Installation
 
@@ -142,6 +143,20 @@ Auto-detect project files:
 promptcat auto > prompt.txt
 ```
 
+Archive source files in the current folder:
+
+```bash
+promptcat archive
+```
+
+The default archive patterns cover JavaScript, TypeScript, Python, Go, Rust, CSS/SCSS, JSX/TSX, HTML, Vue, Svelte, C/C++, Java/Kotlin, Dart, C#, PHP, Ruby, Swift, Elixir, JSON/YAML/TOML/XML/INI, SQL, Protocol Buffers, GraphQL, Terraform, and shell files. Files larger than 1 MiB are skipped by default to avoid pulling large data files into the archive. The archive is written to `archive.tar.zst` using Zstandard level 3. Add patterns with `--include` or replace the defaults with `--pattern`; use `--max-size` to change the per-file limit:
+
+```bash
+promptcat archive --include=**.json,**.yaml
+promptcat archive --pattern=**.js,**.ts --output=source.tar.zst
+promptcat archive --max-size=10MB
+```
+
 Upgrade an installed copy to latest GitHub release:
 
 ```bash
@@ -167,6 +182,11 @@ Directories passed directly are skipped.
 | `--max-size=1MB` | Skip files larger than the specified size |
 | `--fullpath` | Output absolute paths instead of the provided relative paths |
 | `--include=go,md` | Include only these extensions |
+| `archive` | Archive matching source files as `archive.tar.zst` with Zstandard level 3 |
+| `--include=**.json,**.yaml` | Add archive glob patterns to the defaults |
+| `--pattern=**.js,**.ts` | Replace archive glob patterns entirely |
+| `--output=source.tar.zst` | Set the archive output path |
+| `--max-size=1MB` | Set the maximum archive file size; defaults to 1 MiB for archives |
 | `--exclude=json,lock` | Exclude these extensions |
 | `--ignore-dir=.git,node_modules` | Skip files whose path contains any of these directory names |
 | `!pattern` | Exclude files matching this glob pattern |
@@ -188,7 +208,7 @@ Notes:
 
 `promptcat auto` detects mixed projects and selects source files, relevant manifests/configuration, root documentation, and GitHub Actions workflows. It supports Go; JavaScript, TypeScript, React, Vue, Svelte, Angular, Astro, and Nuxt; Python; Rust; Java and Kotlin; C#; Ruby; PHP; Swift; Dart/Flutter; Elixir; shell; Docker/Compose; and Terraform/HCL.
 
-Auto mode skips lockfiles and common generated or dependency folders including `.git`, `node_modules`, `vendor`, `.venv`, `venv`, `__pycache__`, `.pytest_cache`, `.mypy_cache`, `.ruff_cache`, `.tox`, `.pixi`, `dist`, `build`, `coverage`, `target`, `.next`, `.nuxt`, `.svelte-kit`, and `.cache`. Use `--include`, `--exclude`, `--ignore-dir`, or `--max-size` to narrow its selection further.
+Auto mode skips lockfiles and common generated or dependency folders including `.git`, `node_modules`, `vendor`, `.venv`, `venv`, `__pycache__`, `.pytest_cache`, `.mypy_cache`, `.ruff_cache`, `.tox`, `.nox`, `.pixi`, `dist`, `build`, `coverage`, `target`, `.next`, `.nuxt`, `.svelte-kit`, and `.cache`. Use `--include`, `--exclude`, `--ignore-dir`, or `--max-size` to narrow its selection further.
 
 ## Globs and Shells
 
@@ -241,7 +261,7 @@ mise run setup
 mise run build
 mise run test
 mise run install
-mise run release VERSION=0.1.2
+mise run release VERSION=0.1.3
 ```
 
 Direct Go commands work as well:
@@ -254,15 +274,21 @@ go install ./cmd/promptcat
 
 `mise run build` uses `default.pgo` automatically when that profile is present; otherwise it builds without PGO. It creates native and opposite-platform binaries; release builds use Go's `-pgo=auto` mode.
 
+Regenerate the project profile from the representative small-file benchmark:
+
+```bash
+go test ./cmd/promptcat -cpuprofile=default.pgo -run '^$' -bench '^BenchmarkStreamFilesSmallFiles$' -benchtime=5s
+```
+
 Continuous integration runs the build and test workflow on Windows, macOS, and Linux.
 
 To publish a new GitHub release, push a semantic version tag:
 
 ```bash
-mise run release VERSION=0.1.2
+mise run release VERSION=0.1.3
 ```
 
-That task runs tests, creates the `v0.1.2` tag, and pushes it to GitHub.
+That task runs tests, creates the `v0.1.3` tag, and pushes it to GitHub.
 The GitHub Actions release workflow then builds the binaries and publishes the release assets from GitHub-hosted runners.
 
 ## Contributing

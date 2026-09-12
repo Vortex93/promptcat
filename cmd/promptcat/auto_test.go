@@ -72,7 +72,7 @@ func TestSelectAutoFilesIgnoresPythonEnvironmentsAndCaches(t *testing.T) {
 		"pyproject.toml": "[project]\nname = 'example'\n",
 		"main.py":        "print('ok')\n",
 	})
-	for _, directory := range []string{".venv", "venv", "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".tox", ".pixi"} {
+	for _, directory := range []string{".venv", "venv", "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".tox", ".nox", ".pixi"} {
 		writeAutoFiles(t, root, map[string]string{
 			filepath.Join(directory, "dependency.py"): "print('ignored')\n",
 		})

@@ -35,6 +35,7 @@ var autoIgnoredDirs = map[string]bool{
 	"dist": true, "node_modules": true, "out": true, "storybook-static": true, "target": true,
 	"vendor": true, ".venv": true, "venv": true, "__pycache__": true, ".pytest_cache": true,
 	".mypy_cache": true, ".ruff_cache": true, ".tox": true, ".pixi": true,
+	".nox": true,
 }
 
 var autoStacks = map[string]autoStack{
@@ -185,6 +186,9 @@ func selectAutoFiles(root string, ignoredDirs map[string]bool) ([]string, error)
 			if path != root && isAutoIgnoredDir(entry.Name(), ignoredDirs) {
 				return filepath.SkipDir
 			}
+			return nil
+		}
+		if entry.Type()&os.ModeType != 0 {
 			return nil
 		}
 

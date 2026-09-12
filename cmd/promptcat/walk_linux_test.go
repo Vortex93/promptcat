@@ -3,11 +3,14 @@
 package main
 
 import (
+	"bytes"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
+	"time"
 )
 
 func TestWalkDirUnsortedDeepTreeWithLowFDLimit(t *testing.T) {
@@ -50,5 +53,34 @@ func TestWalkDirUnsortedDeepTreeWithLowFDLimit(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("deep leaf was not visited")
+	}
+}
+
+func TestRunSkipsFIFO(t *testing.T) {
+	fifo := filepath.Join(t.TempDir(), "input.fifo")
+	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		var output, stderr bytes.Buffer
+		done <- run([]string{fifo}, &output, &stderr)
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("run returned error: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("run blocked while opening FIFO")
+	}
+
+	var output, stderr bytes.Buffer
+	if err := run([]string{fifo}, &output, &stderr); err != nil {
+		t.Fatal(err)
+	}
+	if output.Len() != 0 || !strings.Contains(stderr.String(), "Skipping (not regular)") {
+		t.Fatalf("FIFO was not skipped: output=%q stderr=%q", output.String(), stderr.String())
 	}
 }
