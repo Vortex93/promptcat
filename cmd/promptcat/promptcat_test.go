@@ -86,6 +86,14 @@ func TestParseArgsArchivePatterns(t *testing.T) {
 	if opts.maxSize != 10_000_000 {
 		t.Fatalf("archive maxSize = %d, want 10000000", opts.maxSize)
 	}
+
+	opts, err = parseArgs([]string{"archive", "--files"})
+	if err != nil {
+		t.Fatalf("parseArgs(--files): %v", err)
+	}
+	if !opts.archiveFiles {
+		t.Fatal("parseArgs(--files) did not enable file-based archives")
+	}
 }
 
 func TestDefaultArchivePatternsCoverSupportedFiles(t *testing.T) {
@@ -131,6 +139,30 @@ func TestAutocompleteScripts(t *testing.T) {
 	}
 	if _, err := autocompleteScript("unknown"); err == nil {
 		t.Fatal("autocompleteScript accepted an unsupported shell")
+	}
+}
+
+func TestParseArgsClipboard(t *testing.T) {
+	opts, err := parseArgs([]string{"clipboard", "README.md"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !opts.clipboard || !reflect.DeepEqual(opts.inputs, []string{"README.md"}) {
+		t.Fatalf("clipboard options = %#v", opts)
+	}
+}
+
+func TestClipboardDefaultsUseArchiveSelection(t *testing.T) {
+	opts := options{}
+	applyArchiveDefaults(&opts)
+	if opts.maxSize != defaultArchiveMaxSize {
+		t.Fatalf("clipboard maxSize = %d, want %d", opts.maxSize, defaultArchiveMaxSize)
+	}
+	if !opts.ignoredDirs["node_modules"] || !opts.ignoredDirs[".git"] {
+		t.Fatalf("clipboard ignored directories = %#v", opts.ignoredDirs)
+	}
+	if len(opts.archivePatterns) != len(defaultArchivePatterns) {
+		t.Fatalf("clipboard patterns = %d, want %d", len(opts.archivePatterns), len(defaultArchivePatterns))
 	}
 }
 

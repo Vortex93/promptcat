@@ -30,6 +30,20 @@ var defaultArchivePatterns = []string{
 	"**.proto", "**.graphql", "**.tf", "**.sh", "**.bash", "**.zsh",
 }
 
+func applyArchiveDefaults(opts *options) {
+	if opts.maxSize == 0 {
+		opts.maxSize = defaultArchiveMaxSize
+	}
+	archiveIgnoredDirs := parseDirs(strings.Join(defaultArchiveIgnoredDirs, ","))
+	for name := range opts.ignoredDirs {
+		archiveIgnoredDirs[name] = true
+	}
+	opts.ignoredDirs = archiveIgnoredDirs
+	if len(opts.archivePatterns) == 0 {
+		opts.archivePatterns = append([]string(nil), defaultArchivePatterns...)
+	}
+}
+
 func runArchive(opts options, stderr io.Writer) error {
 	root := "."
 	if len(opts.inputs) == 1 {
@@ -90,10 +104,52 @@ func runArchive(opts options, stderr io.Writer) error {
 		return errors.New("archive found no matching files")
 	}
 
-	if err := writeTarZst(outputPath, root, files); err != nil {
+	if opts.archiveFiles {
+		if err := writeTarZst(outputPath, root, files); err != nil {
+			return err
+		}
+		fmt.Fprintf(stderr, "Archived %d files to %s\n", len(files), outputPath)
+		return nil
+	}
+
+	temporaryDirectory, err := os.MkdirTemp("", "promptcat-archive-")
+	if err != nil {
+		return fmt.Errorf("create temporary archive directory: %w", err)
+	}
+	defer os.RemoveAll(temporaryDirectory)
+	exportPath := filepath.Join(temporaryDirectory, "export.txt")
+	exportFile, err := os.Create(exportPath)
+	if err != nil {
+		return fmt.Errorf("create archive export: %w", err)
+	}
+	output := bufio.NewWriterSize(exportFile, 256*1024)
+	tasks := make([]fileTask, 0, len(files))
+	for _, file := range files {
+		tasks = append(tasks, fileTask{input: filepath.Join(root, filepath.FromSlash(file)), path: filepath.ToSlash(file)})
+	}
+	streamErr := streamFiles(output, tasks, stderr)
+	flushErr := output.Flush()
+	closeErr := exportFile.Close()
+	if streamErr != nil {
+		return fmt.Errorf("create archive export: %w", streamErr)
+	}
+	if flushErr != nil {
+		return fmt.Errorf("flush archive export: %w", flushErr)
+	}
+	if closeErr != nil {
+		return fmt.Errorf("close archive export: %w", closeErr)
+	}
+	exportInfo, err := os.Stat(exportPath)
+	if err != nil {
+		return fmt.Errorf("stat archive export: %w", err)
+	}
+	if exportInfo.Size() == 0 {
+		return errors.New("archive found no readable text files")
+	}
+	if err := writeTarZst(outputPath, temporaryDirectory, []string{"export.txt"}); err != nil {
 		return err
 	}
-	fmt.Fprintf(stderr, "Archived %d files to %s\n", len(files), outputPath)
+	fmt.Fprintf(stderr, "Archived %d files as export.txt to %s\n", len(files), outputPath)
 	return nil
 }
 

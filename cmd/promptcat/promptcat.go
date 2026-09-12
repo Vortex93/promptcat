@@ -171,6 +171,8 @@ type options struct {
 	autocomplete        bool
 	autocompleteInstall bool
 	autocompleteShell   string
+	archiveFiles        bool
+	clipboard           bool
 	upgrade             bool
 	fullPath            bool
 	maxSize             int64
@@ -222,6 +224,9 @@ func parseArgs(args []string) (options, error) {
 				i++
 			}
 
+		case arg == "clipboard":
+			opts.clipboard = true
+
 		case arg == "--upgrade":
 			opts.upgrade = true
 
@@ -256,6 +261,9 @@ func parseArgs(args []string) (options, error) {
 				return opts, flagError("missing value for --output")
 			}
 			opts.archiveOutput = args[i]
+
+		case arg == "--files":
+			opts.archiveFiles = true
 
 		case arg == "--exclude":
 			i++
@@ -390,17 +398,7 @@ func parseArgs(args []string) (options, error) {
 		if opts.archiveOutput == "" {
 			opts.archiveOutput = "archive.tar.zst"
 		}
-		if opts.maxSize == 0 {
-			opts.maxSize = defaultArchiveMaxSize
-		}
-		archiveIgnoredDirs := parseDirs(strings.Join(defaultArchiveIgnoredDirs, ","))
-		for name := range opts.ignoredDirs {
-			archiveIgnoredDirs[name] = true
-		}
-		opts.ignoredDirs = archiveIgnoredDirs
-		if len(opts.archivePatterns) == 0 {
-			opts.archivePatterns = append([]string(nil), defaultArchivePatterns...)
-		}
+		applyArchiveDefaults(&opts)
 		opts.archivePatterns = append(opts.archivePatterns, opts.archiveIncludes...)
 		for _, pattern := range opts.archivePatterns {
 			if pattern == "" {
@@ -479,6 +477,7 @@ Usage:
 	  promptcat auto [options]
 	  promptcat archive [options] [folder]
 	  promptcat autocomplete [install] [shell]
+	  promptcat clipboard [options] <files...>
 
 Options:
   --help, -h            Show help
@@ -490,7 +489,9 @@ Options:
 	--pattern=**.go,**.ts  Replace archive's default glob patterns
 	--output=archive.tar.zst
 	                        Archive output path
+	--files                Store matching files separately instead of export.txt
 	autocomplete install    Install shell completion (bash, fish, zsh, powershell)
+	clipboard               Copy normal formatted output to the system clipboard
   --exclude=json        Exclude extensions
 	--ignore-dir=name     Ignore directories by name
   !pattern              Exclude files matching a glob pattern
@@ -507,9 +508,11 @@ Examples:
   promptcat auto
   promptcat archive
   promptcat archive --include=**.json src
-	  promptcat archive --pattern=**.js,**.ts --output=src.tar.zst
+  promptcat archive --pattern=**.js,**.ts --output=src.tar.zst
+	  promptcat archive --files
 	  promptcat autocomplete bash
 	  promptcat autocomplete install fish
+	  promptcat clipboard README.md
 `
 }
 
@@ -1152,6 +1155,12 @@ func run(cliArgs []string, stdout, stderr io.Writer) error {
 		if err != nil {
 			return fmt.Errorf("Auto detection failed: %w", err)
 		}
+	} else if opts.clipboard && len(opts.inputs) == 0 {
+		applyArchiveDefaults(&opts)
+		args, err = expandInputs(opts.archivePatterns, nil, opts.ignoredDirs)
+		if err != nil {
+			return fmt.Errorf("Failed to expand clipboard inputs: %w", err)
+		}
 	} else {
 		args, err = expandInputs(opts.inputs, opts.excludePatterns, opts.ignoredDirs)
 		if err != nil {
@@ -1163,7 +1172,12 @@ func run(cliArgs []string, stdout, stderr io.Writer) error {
 		return errors.New(usage())
 	}
 
-	output := bufio.NewWriterSize(outputWriter{writer: stdout}, 256*1024)
+	var outputTarget io.Writer = stdout
+	var clipboardOutput bytes.Buffer
+	if opts.clipboard {
+		outputTarget = &clipboardOutput
+	}
+	output := bufio.NewWriterSize(outputWriter{writer: outputTarget}, 256*1024)
 	tasks := make([]fileTask, 0, len(args))
 
 	for _, input := range args {
@@ -1240,6 +1254,12 @@ func run(cliArgs []string, stdout, stderr io.Writer) error {
 
 	if err := output.Flush(); err != nil {
 		return fmt.Errorf("flushing output: %w", err)
+	}
+	if opts.clipboard {
+		if err := copyToClipboard(clipboardOutput.Bytes()); err != nil {
+			return err
+		}
+		fmt.Fprintf(stderr, "Copied Promptcat output to the clipboard\n")
 	}
 	return nil
 }

@@ -25,6 +25,7 @@ package main
 - Skip binary files automatically by extension and content detection
 - Output relative paths by default or absolute paths with `--fullpath`
 - Create deterministic TAR + Zstandard archives with `promptcat archive`
+- Copy normal Promptcat output to the system clipboard with `promptcat clipboard`
 
 ## Installation
 
@@ -149,13 +150,22 @@ Archive source files in the current folder:
 promptcat archive
 ```
 
-The default archive patterns cover JavaScript, TypeScript, Python, Go, Rust, CSS/SCSS, JSX/TSX, HTML, Vue, Svelte, C/C++, Java/Kotlin, Dart, C#, PHP, Ruby, Swift, Elixir, JSON/YAML/TOML/XML/INI, SQL, Protocol Buffers, GraphQL, Terraform, and shell files. Archives skip common dependency, generated, cache, temporary, and VCS directories by default, including `.git`, `node_modules`, `vendor`, `dist`, `build`, `target`, `coverage`, `.next`, `.nuxt`, `.svelte-kit`, `.cache`, `.gradle`, `.idea`, `tmp`, `temp`, and `logs`. Files larger than 1 MiB are also skipped by default to avoid pulling large data files into the archive. The archive is written to `archive.tar.zst` using Zstandard level 3 and is replaced when rerunning the command. Add patterns with `--include` or replace the defaults with `--pattern`; use `--max-size` to change the per-file limit:
+The default archive patterns cover JavaScript, TypeScript, Python, Go, Rust, CSS/SCSS, JSX/TSX, HTML, Vue, Svelte, C/C++, Java/Kotlin, Dart, C#, PHP, Ruby, Swift, Elixir, JSON/YAML/TOML/XML/INI, SQL, Protocol Buffers, GraphQL, Terraform, and shell files. Archives skip common dependency, generated, cache, temporary, and VCS directories by default, including `.git`, `node_modules`, `vendor`, `dist`, `build`, `target`, `coverage`, `.next`, `.nuxt`, `.svelte-kit`, `.cache`, `.gradle`, `.idea`, `tmp`, `temp`, and `logs`. Files larger than 1 MiB are also skipped by default to avoid pulling large data files into the archive. By default, matching files are formatted using Promptcat’s normal `<<<FILE: ...>>>` text format and stored as `export.txt` inside `archive.tar.zst`; use `--files` to store them as separate archive entries instead. The archive uses Zstandard level 3 and is replaced when rerunning the command. Add patterns with `--include` or replace the defaults with `--pattern`; use `--max-size` to change the per-file limit:
 
 ```bash
 promptcat archive --include=**.json,**.yaml
 promptcat archive --pattern=**.js,**.ts --output=source.tar.zst
 promptcat archive --max-size=10MB
 ```
+
+Copy Promptcat output directly to the system clipboard. With no inputs, it uses the same source-file defaults, exclusions, and size limit as `archive`:
+
+```bash
+promptcat clipboard
+promptcat clipboard README.md "cmd/**/*.go"
+```
+
+On Linux, Promptcat uses `wl-copy`, `xclip`, or `xsel`; macOS uses `pbcopy`, and Windows uses `clip`.
 
 Generate or install shell completion for Bash, Fish, Zsh, or PowerShell:
 
@@ -197,6 +207,7 @@ Directories passed directly are skipped.
 | `--pattern=**.js,**.ts` | Replace archive glob patterns entirely |
 | `--output=source.tar.zst` | Set the archive output path |
 | `--max-size=1MB` | Set the maximum archive file size; defaults to 1 MiB for archives |
+| `--files` | Store matching files separately instead of generating `export.txt` |
 | `autocomplete [shell]` | Print completion for Bash, Fish, Zsh, or PowerShell |
 | `autocomplete install [shell]` | Install completion, detecting the current shell when omitted |
 | `--exclude=json,lock` | Exclude these extensions |
