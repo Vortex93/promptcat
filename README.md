@@ -149,13 +149,23 @@ Archive source files in the current folder:
 promptcat archive
 ```
 
-The default archive patterns cover JavaScript, TypeScript, Python, Go, Rust, CSS/SCSS, JSX/TSX, HTML, Vue, Svelte, C/C++, Java/Kotlin, Dart, C#, PHP, Ruby, Swift, Elixir, JSON/YAML/TOML/XML/INI, SQL, Protocol Buffers, GraphQL, Terraform, and shell files. Files larger than 1 MiB are skipped by default to avoid pulling large data files into the archive. The archive is written to `archive.tar.zst` using Zstandard level 3. Add patterns with `--include` or replace the defaults with `--pattern`; use `--max-size` to change the per-file limit:
+The default archive patterns cover JavaScript, TypeScript, Python, Go, Rust, CSS/SCSS, JSX/TSX, HTML, Vue, Svelte, C/C++, Java/Kotlin, Dart, C#, PHP, Ruby, Swift, Elixir, JSON/YAML/TOML/XML/INI, SQL, Protocol Buffers, GraphQL, Terraform, and shell files. Archives skip common dependency, generated, cache, temporary, and VCS directories by default, including `.git`, `node_modules`, `vendor`, `dist`, `build`, `target`, `coverage`, `.next`, `.nuxt`, `.svelte-kit`, `.cache`, `.gradle`, `.idea`, `tmp`, `temp`, and `logs`. Files larger than 1 MiB are also skipped by default to avoid pulling large data files into the archive. The archive is written to `archive.tar.zst` using Zstandard level 3 and is replaced when rerunning the command. Add patterns with `--include` or replace the defaults with `--pattern`; use `--max-size` to change the per-file limit:
 
 ```bash
 promptcat archive --include=**.json,**.yaml
 promptcat archive --pattern=**.js,**.ts --output=source.tar.zst
 promptcat archive --max-size=10MB
 ```
+
+Generate or install shell completion for Bash, Fish, Zsh, or PowerShell:
+
+```bash
+promptcat autocomplete bash
+promptcat autocomplete install fish
+promptcat autocomplete install
+```
+
+The install form detects the current shell when no shell is specified. Bash, Fish, and Zsh completion files are installed in their standard user completion directories; PowerShell completion is added to the user profile without removing existing profile content.
 
 Upgrade an installed copy to latest GitHub release:
 
@@ -187,6 +197,8 @@ Directories passed directly are skipped.
 | `--pattern=**.js,**.ts` | Replace archive glob patterns entirely |
 | `--output=source.tar.zst` | Set the archive output path |
 | `--max-size=1MB` | Set the maximum archive file size; defaults to 1 MiB for archives |
+| `autocomplete [shell]` | Print completion for Bash, Fish, Zsh, or PowerShell |
+| `autocomplete install [shell]` | Install completion, detecting the current shell when omitted |
 | `--exclude=json,lock` | Exclude these extensions |
 | `--ignore-dir=.git,node_modules` | Skip files whose path contains any of these directory names |
 | `!pattern` | Exclude files matching this glob pattern |

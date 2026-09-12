@@ -104,6 +104,36 @@ func TestDefaultArchivePatternsCoverSupportedFiles(t *testing.T) {
 	}
 }
 
+func TestParseArgsArchiveIncludesDefaultIgnoredDirs(t *testing.T) {
+	opts, err := parseArgs([]string{"archive", "--ignore-dir=custom-cache"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range append(defaultArchiveIgnoredDirs, "custom-cache") {
+		if !opts.ignoredDirs[name] {
+			t.Errorf("archive ignored directories do not include %s", name)
+		}
+	}
+	if opts.ignoredDirs[".vscode"] {
+		t.Error("archive should not ignore .vscode by default")
+	}
+}
+
+func TestAutocompleteScripts(t *testing.T) {
+	for _, shell := range supportedAutocompleteShells {
+		script, err := autocompleteScript(shell)
+		if err != nil {
+			t.Fatalf("autocompleteScript(%q): %v", shell, err)
+		}
+		if !strings.Contains(script, "promptcat") {
+			t.Errorf("%s completion does not mention promptcat", shell)
+		}
+	}
+	if _, err := autocompleteScript("unknown"); err == nil {
+		t.Fatal("autocompleteScript accepted an unsupported shell")
+	}
+}
+
 func TestParseArgsParsesMaxSize(t *testing.T) {
 	for _, args := range [][]string{
 		{"--max-size", "1MB", "file.json"},

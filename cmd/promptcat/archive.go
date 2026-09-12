@@ -14,6 +14,13 @@ import (
 
 const defaultArchiveMaxSize = 1 << 20
 
+var defaultArchiveIgnoredDirs = []string{
+	".git", ".svn", ".hg", "node_modules", "vendor", ".venv", "venv", "env", "__pycache__",
+	"dist", "build", "out", "target", "coverage", ".storybook", "storybook-static",
+	".next", ".nuxt", ".svelte-kit", ".astro", ".cache", ".turbo", ".pytest_cache",
+	".mypy_cache", ".ruff_cache", ".tox", ".nox", ".pixi", ".gradle", ".idea", "tmp", "temp", "logs",
+}
+
 var defaultArchivePatterns = []string{
 	"**.js", "**.ts", "**.py", "**.go", "**.rs", "**.css", "**.scss",
 	"**.mjs", "**.cjs", "**.jsx", "**.tsx", "**.html", "**.vue", "**.svelte",
@@ -103,7 +110,7 @@ func writeTarZst(outputPath, root string, files []string) error {
 	}
 	tarCommand.Stderr = os.Stderr
 
-	zstdCommand := exec.Command("zstd", "-3", "--quiet", "-o", outputPath)
+	zstdCommand := exec.Command("zstd", "-3", "--quiet", "-f", "-o", outputPath)
 	zstdCommand.Dir = root
 	zstdCommand.Stdin = tarOutput
 	zstdCommand.Stderr = os.Stderr

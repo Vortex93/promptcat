@@ -166,19 +166,22 @@ func isProbablyText(data []byte) bool {
 }
 
 type options struct {
-	auto            bool
-	archive         bool
-	upgrade         bool
-	fullPath        bool
-	maxSize         int64
-	include         map[string]bool
-	archiveIncludes []string
-	archivePatterns []string
-	archiveOutput   string
-	exclude         map[string]bool
-	ignoredDirs     map[string]bool
-	inputs          []string
-	excludePatterns []string
+	auto                bool
+	archive             bool
+	autocomplete        bool
+	autocompleteInstall bool
+	autocompleteShell   string
+	upgrade             bool
+	fullPath            bool
+	maxSize             int64
+	include             map[string]bool
+	archiveIncludes     []string
+	archivePatterns     []string
+	archiveOutput       string
+	exclude             map[string]bool
+	ignoredDirs         map[string]bool
+	inputs              []string
+	excludePatterns     []string
 }
 
 func parseArgs(args []string) (options, error) {
@@ -207,6 +210,17 @@ func parseArgs(args []string) (options, error) {
 
 		case arg == "archive":
 			opts.archive = true
+
+		case arg == "autocomplete":
+			opts.autocomplete = true
+			if i+1 < len(args) && args[i+1] == "install" {
+				opts.autocompleteInstall = true
+				i++
+			}
+			if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
+				opts.autocompleteShell = args[i+1]
+				i++
+			}
 
 		case arg == "--upgrade":
 			opts.upgrade = true
@@ -359,6 +373,13 @@ func parseArgs(args []string) (options, error) {
 		}
 	}
 
+	if opts.autocomplete {
+		if opts.auto || opts.archive || opts.upgrade || opts.fullPath || opts.maxSize > 0 || opts.include != nil || opts.exclude != nil || opts.ignoredDirs != nil || len(opts.inputs) > 0 || len(opts.excludePatterns) > 0 {
+			return opts, flagError("autocomplete cannot be combined with other options or inputs")
+		}
+		return opts, nil
+	}
+
 	if opts.archive {
 		if opts.auto || opts.upgrade || opts.fullPath || opts.exclude != nil || len(opts.excludePatterns) > 0 {
 			return opts, flagError("archive cannot be combined with auto, upgrade, fullpath, or exclude options")
@@ -372,6 +393,11 @@ func parseArgs(args []string) (options, error) {
 		if opts.maxSize == 0 {
 			opts.maxSize = defaultArchiveMaxSize
 		}
+		archiveIgnoredDirs := parseDirs(strings.Join(defaultArchiveIgnoredDirs, ","))
+		for name := range opts.ignoredDirs {
+			archiveIgnoredDirs[name] = true
+		}
+		opts.ignoredDirs = archiveIgnoredDirs
 		if len(opts.archivePatterns) == 0 {
 			opts.archivePatterns = append([]string(nil), defaultArchivePatterns...)
 		}
@@ -450,8 +476,9 @@ func usage() string {
 
 Usage:
   promptcat [options] <files...>
-  promptcat auto [options]
-  promptcat archive [options] [folder]
+	  promptcat auto [options]
+	  promptcat archive [options] [folder]
+	  promptcat autocomplete [install] [shell]
 
 Options:
   --help, -h            Show help
@@ -463,6 +490,7 @@ Options:
 	--pattern=**.go,**.ts  Replace archive's default glob patterns
 	--output=archive.tar.zst
 	                        Archive output path
+	autocomplete install    Install shell completion (bash, fish, zsh, powershell)
   --exclude=json        Exclude extensions
 	--ignore-dir=name     Ignore directories by name
   !pattern              Exclude files matching a glob pattern
@@ -479,7 +507,9 @@ Examples:
   promptcat auto
   promptcat archive
   promptcat archive --include=**.json src
-  promptcat archive --pattern=**.js,**.ts --output=src.tar.zst
+	  promptcat archive --pattern=**.js,**.ts --output=src.tar.zst
+	  promptcat autocomplete bash
+	  promptcat autocomplete install fish
 `
 }
 
@@ -1111,6 +1141,9 @@ func run(cliArgs []string, stdout, stderr io.Writer) error {
 	}
 	if opts.archive {
 		return runArchive(opts, stderr)
+	}
+	if opts.autocomplete {
+		return runAutocomplete(opts, stdout, stderr)
 	}
 
 	var args []string
