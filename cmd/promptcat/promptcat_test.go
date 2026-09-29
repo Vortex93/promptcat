@@ -166,6 +166,9 @@ func TestAutocompleteScripts(t *testing.T) {
 		if !strings.Contains(script, "clipboard") {
 			t.Errorf("%s completion does not mention clipboard", shell)
 		}
+		if !strings.Contains(script, "update") {
+			t.Errorf("%s completion does not mention update", shell)
+		}
 		if !strings.Contains(script, "--ai") && !strings.Contains(script, "-l ai") {
 			t.Errorf("%s completion does not mention --ai", shell)
 		}

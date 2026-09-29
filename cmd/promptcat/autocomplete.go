@@ -116,7 +116,7 @@ func autocompleteInstallPath(shell string) (string, error) {
 const bashAutocomplete = `# promptcat bash completion
 _promptcat() {
     local cur=${COMP_WORDS[COMP_CWORD]}
-    local commands="auto archive autocomplete clipboard"
+    local commands="auto archive update autocomplete clipboard"
     local options="--help --version --upgrade --max-size --fullpath --include --pattern --output --files --clipboard --ai --exclude --ignore-dir"
     if [[ ${COMP_CWORD} -eq 1 ]]; then
         COMPREPLY=($(compgen -W "${commands} ${options}" -- "${cur}"))
@@ -135,11 +135,11 @@ complete -F _promptcat promptcat
 
 const fishAutocomplete = `# promptcat fish completion
 complete -c promptcat -f
-complete -c promptcat -n '__fish_use_subcommand' -a 'auto archive autocomplete clipboard' -d 'Promptcat command'
+complete -c promptcat -n '__fish_use_subcommand' -a 'auto archive update autocomplete clipboard' -d 'Promptcat command'
 complete -c promptcat -n '__fish_seen_subcommand_from autocomplete' -a 'install bash fish zsh powershell' -d 'Completion target'
 complete -c promptcat -n '__fish_use_subcommand' -l help -s h -d 'Show help'
 complete -c promptcat -n '__fish_use_subcommand' -l version -s v -d 'Show version'
-complete -c promptcat -n '__fish_use_subcommand' -l upgrade -d 'Upgrade promptcat'
+complete -c promptcat -n '__fish_use_subcommand' -l upgrade -d 'Legacy alias for update'
 complete -c promptcat -n '__fish_seen_subcommand_from archive' -l include -r -d 'Add archive patterns'
 complete -c promptcat -n '__fish_seen_subcommand_from archive' -l pattern -r -d 'Replace archive patterns'
 complete -c promptcat -n '__fish_seen_subcommand_from archive' -l output -r -d 'Archive output path'
@@ -155,10 +155,10 @@ const zshAutocomplete = `#compdef promptcat
 
 _promptcat() {
     _arguments \\
-        '1:command:(auto archive autocomplete clipboard)' \\
+        '1:command:(auto archive update autocomplete clipboard)' \\
         '--help[Show help]' \\
         '--version[Show version]' \\
-        '--upgrade[Upgrade promptcat]' \\
+        '--upgrade[Legacy alias for update]' \\
         '--max-size=[Maximum file size]' \\
         '--fullpath[Output absolute paths]' \\
         '--include=[Include extensions or archive patterns]' \\
@@ -177,7 +177,7 @@ _promptcat "$@"
 
 const powershellAutocomplete = `Register-ArgumentCompleter -Native -CommandName promptcat -ScriptBlock {
     param($wordToComplete, $commandAst, $cursorPosition)
-    $commands = @('auto', 'archive', 'autocomplete', 'clipboard')
+    $commands = @('auto', 'archive', 'update', 'autocomplete', 'clipboard')
     $options = @('--help', '--version', '--upgrade', '--max-size', '--fullpath', '--include', '--pattern', '--output', '--files', '--clipboard', '--ai', '--exclude', '--ignore-dir')
     $tokens = $commandAst.CommandElements | ForEach-Object { $_.ToString() }
     $candidates = if ($tokens.Count -le 1) { $commands + $options } else { $options }

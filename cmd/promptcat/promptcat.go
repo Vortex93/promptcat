@@ -16,7 +16,7 @@ import (
 	"strings"
 )
 
-var version = "0.1.5"
+var version = "0.1.6"
 var buildDate = "dev"
 
 var binaryExtensions = map[string]bool{
@@ -246,6 +246,9 @@ func parseArgs(args []string) (options, error) {
 		case arg == "archive":
 			opts.archive = true
 
+		case arg == "update":
+			opts.upgrade = true
+
 		case arg == "autocomplete":
 			opts.autocomplete = true
 			if i+1 < len(args) && args[i+1] == "install" {
@@ -433,7 +436,7 @@ func parseArgs(args []string) (options, error) {
 
 	if opts.archive {
 		if opts.auto || opts.upgrade || opts.fullPath || opts.exclude != nil || len(opts.excludePatterns) > 0 {
-			return opts, flagError("archive cannot be combined with auto, upgrade, fullpath, or exclude options")
+			return opts, flagError("archive cannot be combined with auto, update, fullpath, or exclude options")
 		}
 		if len(opts.inputs) > 1 {
 			return opts, flagError("archive accepts at most one folder")
@@ -458,7 +461,7 @@ func parseArgs(args []string) (options, error) {
 	}
 
 	if opts.upgrade && (opts.auto || len(opts.inputs) > 0 || len(opts.excludePatterns) > 0 || opts.include != nil || opts.exclude != nil || opts.ignoredDirs != nil || opts.fullPath || opts.maxSize > 0) {
-		return opts, flagError("--upgrade cannot be combined with other options or inputs")
+		return opts, flagError("update cannot be combined with other options or inputs")
 	}
 	if opts.auto && len(opts.inputs) > 0 {
 		return opts, flagError("auto cannot be combined with explicit files or glob patterns")
@@ -520,27 +523,28 @@ func usage() string {
 
 Usage:
   promptcat [options] <files...>
-	  promptcat auto [options]
-	  promptcat archive [options] [folder]
-	  promptcat autocomplete [install] [shell]
-	  promptcat clipboard [options] <files...>
+  promptcat auto [options]
+  promptcat archive [options] [folder]
+  promptcat update
+  promptcat autocomplete [install] [shell]
+  promptcat clipboard [options] <files...>
 
 Options:
   --help, -h            Show help
   --version, -v         Show version
-  --upgrade             Download and install the latest release
+  --upgrade             Legacy flag alias for update
   --max-size=1MB        Skip files larger than this size
   --fullpath            Output absolute file paths
   --include=go,md       Include only specific extensions
-	--pattern=**.go,**.ts  Replace archive's default glob patterns
-	--output=archive.tar.zst
-	                        Archive output path
-	--files                Store matching files separately instead of export.txt
-	--ai                   Add a lazy AI navigation pack to the archive
-	autocomplete install    Install shell completion (bash, fish, zsh, powershell)
-	clipboard               Copy normal formatted output to the system clipboard
+  --pattern=**.go,**.ts  Replace archive's default glob patterns
+  --output=archive.tar.zst
+                         Archive output path
+  --files                Store matching files separately instead of export.txt
+  --ai                   Add a lazy AI navigation pack to the archive
+  autocomplete install  Install shell completion (bash, fish, zsh, powershell)
+  clipboard              Copy normal formatted output to the system clipboard
   --exclude=json        Exclude extensions
-	--ignore-dir=name     Ignore directories by name
+  --ignore-dir=name     Ignore directories by name
   !pattern              Exclude files matching a glob pattern
 
 Output format:
@@ -554,13 +558,14 @@ Examples:
   promptcat --include=go,md --ignore-dir=.git,node_modules "**/*"
   promptcat auto
   promptcat archive
+  promptcat update
   promptcat archive --include=**.json src
   promptcat archive --pattern=**.js,**.ts --output=src.tar.zst
-	  promptcat archive --files
-	  promptcat archive --ai
-	  promptcat autocomplete bash
-	  promptcat autocomplete install fish
-	  promptcat clipboard README.md
+  promptcat archive --files
+  promptcat archive --ai
+  promptcat autocomplete bash
+  promptcat autocomplete install fish
+  promptcat clipboard README.md
 `
 }
 
@@ -1186,7 +1191,7 @@ func run(cliArgs []string, stdout, stderr io.Writer) error {
 	}
 	if opts.upgrade {
 		if err := upgrade(); err != nil {
-			return fmt.Errorf("Upgrade failed: %w", err)
+			return fmt.Errorf("Update failed: %w", err)
 		}
 		return nil
 	}

@@ -11,17 +11,21 @@ import (
 	"testing"
 )
 
-func TestParseArgsAcceptsUpgradeAlone(t *testing.T) {
-	opts, err := parseArgs([]string{"--upgrade"})
-	if err != nil {
-		t.Fatalf("parseArgs returned error: %v", err)
-	}
-	if !opts.upgrade {
-		t.Fatal("expected upgrade to be enabled")
+func TestParseArgsAcceptsUpdateCommandAndLegacyFlag(t *testing.T) {
+	for _, args := range [][]string{{"update"}, {"--upgrade"}} {
+		opts, err := parseArgs(args)
+		if err != nil {
+			t.Fatalf("parseArgs(%q) returned error: %v", args, err)
+		}
+		if !opts.upgrade {
+			t.Errorf("parseArgs(%q) did not enable updating", args)
+		}
 	}
 
-	if _, err := parseArgs([]string{"--upgrade", "README.md"}); err == nil {
-		t.Fatal("expected upgrade with input to fail")
+	for _, args := range [][]string{{"update", "README.md"}, {"--upgrade", "README.md"}} {
+		if _, err := parseArgs(args); err == nil {
+			t.Errorf("parseArgs(%q) accepted an input with update", args)
+		}
 	}
 }
 

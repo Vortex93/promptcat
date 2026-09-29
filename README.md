@@ -186,11 +186,13 @@ promptcat autocomplete install
 
 The install form detects the current shell when no shell is specified. Bash, Fish, and Zsh completion files are installed in their standard user completion directories; PowerShell completion is added to the user profile without removing existing profile content.
 
-Upgrade an installed copy to latest GitHub release:
+Update an installed copy from the latest GitHub release. Promptcat downloads the matching platform build and verifies its checksum before replacing the current executable:
 
 ```bash
-promptcat --upgrade
+promptcat update
 ```
+
+The legacy `--upgrade` option remains available.
 
 ## Usage
 
@@ -207,7 +209,8 @@ Directories passed directly are skipped.
 | --- | --- |
 | `-h`, `--help` | Show help output |
 | `-v`, `--version` | Show version and build metadata |
-| `--upgrade` | Download and install the latest release |
+| `update` | Download and install the latest GitHub release for this platform |
+| `--upgrade` | Legacy alias for `update` |
 | `--max-size=1MB` | Skip files larger than the specified size |
 | `--fullpath` | Output absolute paths instead of the provided relative paths |
 | `--include=go,md` | Include only these extensions |
@@ -235,7 +238,7 @@ Notes:
 - Directory traversal is unsorted internally, then results are sorted once for deterministic output
 - Files stream serially to preserve deterministic output and immediate error handling
 - `auto` cannot be combined with explicit file paths or glob patterns
-- `--upgrade` downloads the matching release archive, verifies its checksum, and replaces the current executable
+- `update` downloads the matching release archive, verifies its checksum, and replaces the current executable
 - `!pattern` exclusions apply after all positive paths and glob patterns expand
 
 ### Auto Mode
@@ -295,7 +298,7 @@ mise run setup
 mise run build
 mise run test
 mise run install
-mise run release VERSION=0.1.5
+mise run release VERSION=0.1.6
 ```
 
 Direct Go commands work as well:
@@ -319,10 +322,10 @@ Continuous integration runs the build and test workflow on Windows, macOS, and L
 To publish a new GitHub release, push a semantic version tag:
 
 ```bash
-mise run release VERSION=0.1.5
+mise run release VERSION=0.1.6
 ```
 
-That task runs tests, creates the `v0.1.5` tag, and pushes it to GitHub.
+That task runs tests, creates the `v0.1.6` tag, and pushes it to GitHub.
 The GitHub Actions release workflow then builds the binaries and publishes the release assets from GitHub-hosted runners.
 
 ## Contributing
