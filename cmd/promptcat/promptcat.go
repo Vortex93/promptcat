@@ -15,7 +15,7 @@ import (
 	"strings"
 )
 
-var version = "0.1.4"
+var version = "0.1.5"
 var buildDate = "dev"
 
 var binaryExtensions = map[string]bool{
@@ -173,6 +173,7 @@ type options struct {
 	autocompleteShell   string
 	archiveFiles        bool
 	archiveClipboard    bool
+	archiveAI           bool
 	clipboard           bool
 	upgrade             bool
 	fullPath            bool
@@ -268,6 +269,9 @@ func parseArgs(args []string) (options, error) {
 
 		case arg == "--clipboard":
 			opts.archiveClipboard = true
+
+		case arg == "--ai":
+			opts.archiveAI = true
 
 		case arg == "--exclude":
 			i++
@@ -386,10 +390,14 @@ func parseArgs(args []string) (options, error) {
 	}
 
 	if opts.autocomplete {
-		if opts.auto || opts.archive || opts.upgrade || opts.fullPath || opts.maxSize > 0 || opts.include != nil || opts.exclude != nil || opts.ignoredDirs != nil || len(opts.inputs) > 0 || len(opts.excludePatterns) > 0 {
+		if opts.auto || opts.archive || opts.archiveAI || opts.upgrade || opts.fullPath || opts.maxSize > 0 || opts.include != nil || opts.exclude != nil || opts.ignoredDirs != nil || len(opts.inputs) > 0 || len(opts.excludePatterns) > 0 {
 			return opts, flagError("autocomplete cannot be combined with other options or inputs")
 		}
 		return opts, nil
+	}
+
+	if opts.archiveAI && !opts.archive {
+		return opts, flagError("--ai requires the archive command")
 	}
 
 	if opts.archive {
@@ -497,6 +505,7 @@ Options:
 	--output=archive.tar.zst
 	                        Archive output path
 	--files                Store matching files separately instead of export.txt
+	--ai                   Add a lazy AI navigation pack to the archive
 	autocomplete install    Install shell completion (bash, fish, zsh, powershell)
 	clipboard               Copy normal formatted output to the system clipboard
   --exclude=json        Exclude extensions
@@ -517,6 +526,7 @@ Examples:
   promptcat archive --include=**.json src
   promptcat archive --pattern=**.js,**.ts --output=src.tar.zst
 	  promptcat archive --files
+	  promptcat archive --ai
 	  promptcat autocomplete bash
 	  promptcat autocomplete install fish
 	  promptcat clipboard README.md

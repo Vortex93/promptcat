@@ -15,10 +15,21 @@ import (
 const defaultArchiveMaxSize = 1 << 20
 
 var defaultArchiveIgnoredDirs = []string{
-	".git", ".svn", ".hg", "node_modules", "vendor", ".venv", "venv", "env", "__pycache__",
+	".git", ".svn", ".hg", ".promptcat", "node_modules", "vendor", ".venv", "venv", "env", "__pycache__",
 	"dist", "build", "out", "target", "coverage", ".storybook", "storybook-static",
 	".next", ".nuxt", ".svelte-kit", ".astro", ".cache", ".turbo", ".pytest_cache",
 	".mypy_cache", ".ruff_cache", ".tox", ".nox", ".pixi", ".gradle", ".idea", "tmp", "temp", "logs",
+}
+
+var aiArchiveContextPatterns = []string{
+	"**.md",
+	"**/go.mod", "**/go.sum", "**/go.work", "**/go.work.sum",
+	"**/package.json", "**/package-lock.json", "**/pnpm-lock.yaml", "**/yarn.lock", "**/bun.lock", "**/bun.lockb",
+	"**/Cargo.toml", "**/Cargo.lock",
+	"**/pyproject.toml", "**/requirements.txt", "**/requirements-dev.txt", "**/Pipfile", "**/Pipfile.lock", "**/poetry.lock",
+	"**/Dockerfile", "**/Dockerfile.*", "**/docker-compose.yml", "**/docker-compose.yaml", "**/compose.yml", "**/compose.yaml",
+	"**/Makefile", "**/Taskfile.yml", "**/Taskfile.yaml",
+	"**/.env.example", "**/.env.sample",
 }
 
 var defaultArchivePatterns = []string{
@@ -28,6 +39,8 @@ var defaultArchivePatterns = []string{
 	"**.dart", "**.cs", "**.php", "**.rb", "**.swift", "**.ex", "**.exs",
 	"**.json", "**.yaml", "**.yml", "**.toml", "**.xml", "**.ini", "**.sql",
 	"**.proto", "**.graphql", "**.tf", "**.sh", "**.bash", "**.zsh",
+	"**.lua", "**.scala", "**.groovy", "**.zig", "**.fs", "**.fsx",
+	"**.clj", "**.cljs", "**.cljc", "**.pl", "**.pm", "**.r",
 }
 
 func applyArchiveDefaults(opts *options) {
@@ -38,9 +51,15 @@ func applyArchiveDefaults(opts *options) {
 	for name := range opts.ignoredDirs {
 		archiveIgnoredDirs[name] = true
 	}
+	if opts.archiveAI {
+		archiveIgnoredDirs[".agentpack"] = true
+	}
 	opts.ignoredDirs = archiveIgnoredDirs
 	if len(opts.archivePatterns) == 0 {
 		opts.archivePatterns = append([]string(nil), defaultArchivePatterns...)
+		if opts.archiveAI {
+			opts.archivePatterns = append(opts.archivePatterns, aiArchiveContextPatterns...)
+		}
 	}
 }
 
@@ -104,7 +123,7 @@ func runArchive(opts options, stderr io.Writer) error {
 		return errors.New("archive found no matching files")
 	}
 
-	if opts.archiveFiles {
+	if opts.archiveFiles && !opts.archiveAI {
 		if err := writeTarZst(outputPath, root, files); err != nil {
 			return err
 		}
@@ -117,6 +136,27 @@ func runArchive(opts options, stderr io.Writer) error {
 		return fmt.Errorf("create temporary archive directory: %w", err)
 	}
 	defer os.RemoveAll(temporaryDirectory)
+
+	if opts.archiveFiles {
+		archiveFiles := make([]string, 0, len(files)+8)
+		for _, file := range files {
+			if err := stageArchiveFile(root, temporaryDirectory, file); err != nil {
+				return err
+			}
+			archiveFiles = append(archiveFiles, filepath.ToSlash(file))
+		}
+		packFiles, err := writeAIArchivePack(root, files, temporaryDirectory)
+		if err != nil {
+			return err
+		}
+		archiveFiles = append(archiveFiles, packFiles...)
+		if err := writeTarZst(outputPath, temporaryDirectory, archiveFiles); err != nil {
+			return err
+		}
+		fmt.Fprintf(stderr, "Archived %d files with AI navigation pack to %s\n", len(files), outputPath)
+		return nil
+	}
+
 	exportPath := filepath.Join(temporaryDirectory, "export.txt")
 	exportFile, err := os.Create(exportPath)
 	if err != nil {
@@ -146,7 +186,15 @@ func runArchive(opts options, stderr io.Writer) error {
 	if exportInfo.Size() == 0 {
 		return errors.New("archive found no readable text files")
 	}
-	if err := writeTarZst(outputPath, temporaryDirectory, []string{"export.txt"}); err != nil {
+	archiveFiles := []string{"export.txt"}
+	if opts.archiveAI {
+		packFiles, packErr := writeAIArchivePack(root, files, temporaryDirectory)
+		if packErr != nil {
+			return packErr
+		}
+		archiveFiles = append(archiveFiles, packFiles...)
+	}
+	if err := writeTarZst(outputPath, temporaryDirectory, archiveFiles); err != nil {
 		return err
 	}
 	if opts.archiveClipboard {
@@ -155,7 +203,44 @@ func runArchive(opts options, stderr io.Writer) error {
 		}
 		fmt.Fprintln(stderr, "Copied archive file to the clipboard")
 	}
-	fmt.Fprintf(stderr, "Archived %d files as export.txt to %s\n", len(files), outputPath)
+	if opts.archiveAI {
+		fmt.Fprintf(stderr, "Archived %d files as export.txt with AI navigation pack to %s\n", len(files), outputPath)
+	} else {
+		fmt.Fprintf(stderr, "Archived %d files as export.txt to %s\n", len(files), outputPath)
+	}
+	return nil
+}
+
+func stageArchiveFile(root, destination, relative string) error {
+	source := filepath.Join(root, filepath.FromSlash(relative))
+	target := filepath.Join(destination, filepath.FromSlash(relative))
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		return fmt.Errorf("create archive staging directory: %w", err)
+	}
+	if err := os.Link(source, target); err == nil {
+		return nil
+	}
+
+	input, err := os.Open(source)
+	if err != nil {
+		return fmt.Errorf("open archive source %s: %w", relative, err)
+	}
+	defer input.Close()
+	info, err := input.Stat()
+	if err != nil {
+		return fmt.Errorf("stat archive source %s: %w", relative, err)
+	}
+	output, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, info.Mode().Perm())
+	if err != nil {
+		return fmt.Errorf("create staged archive file %s: %w", relative, err)
+	}
+	if _, err := io.Copy(output, input); err != nil {
+		_ = output.Close()
+		return fmt.Errorf("copy archive source %s: %w", relative, err)
+	}
+	if err := output.Close(); err != nil {
+		return fmt.Errorf("close staged archive file %s: %w", relative, err)
+	}
 	return nil
 }
 

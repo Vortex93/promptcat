@@ -105,6 +105,17 @@ func TestParseArgsArchivePatterns(t *testing.T) {
 	if _, err := parseArgs([]string{"archive", "--files", "--clipboard"}); err == nil {
 		t.Fatal("archive accepted incompatible --files and --clipboard")
 	}
+
+	opts, err = parseArgs([]string{"archive", "--ai"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !opts.archiveAI {
+		t.Fatal("parseArgs(--ai) did not enable AI navigation pack")
+	}
+	if _, err := parseArgs([]string{"--ai", "README.md"}); err == nil {
+		t.Fatal("--ai was accepted without archive command")
+	}
 }
 
 func TestDefaultArchivePatternsCoverSupportedFiles(t *testing.T) {
@@ -146,6 +157,12 @@ func TestAutocompleteScripts(t *testing.T) {
 		}
 		if !strings.Contains(script, "promptcat") {
 			t.Errorf("%s completion does not mention promptcat", shell)
+		}
+		if !strings.Contains(script, "clipboard") {
+			t.Errorf("%s completion does not mention clipboard", shell)
+		}
+		if !strings.Contains(script, "--ai") && !strings.Contains(script, "-l ai") {
+			t.Errorf("%s completion does not mention --ai", shell)
 		}
 	}
 	if _, err := autocompleteScript("unknown"); err == nil {
