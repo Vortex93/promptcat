@@ -388,7 +388,7 @@ func TestExpandInputsUsesSimpleExtensionGlob(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"nested/file.go", "top.go"}
+	want := []string{filepath.Join("nested", "file.go"), "top.go"}
 	if !reflect.DeepEqual(files, want) {
 		t.Fatalf("expandInputs = %#v, want %#v", files, want)
 	}
