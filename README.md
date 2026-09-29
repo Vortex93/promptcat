@@ -159,7 +159,7 @@ promptcat archive --max-size=10MB
 promptcat archive --ai --output=source.tar.zst
 ```
 
-`--ai` adds a lightweight `.promptcat/` navigator and project metadata. The included Python tool builds symbol and relationship indexes when used, so creating the archive does not need to analyze every source file up front. It works with both formatted (`export.txt`) and `--files` archive layouts.
+`--ai` adds a lightweight `.promptcat/` navigator and project metadata. The metadata lists each Git repository found under the selected folder (including linked worktrees) with its archive-relative path, branch/commit, and changes to included files; the top-level `git` field remains available for older consumers. Multiple repositories stay together in one archive. The included Python tool builds symbol and relationship indexes when used, so creating the archive does not need to analyze every source file up front. It works with both formatted (`export.txt`) and `--files` archive layouts.
 
 Create the archive and copy the generated `.tar.zst` file to the system clipboard as a file:
 
@@ -298,7 +298,7 @@ mise run setup
 mise run build
 mise run test
 mise run install
-mise run release VERSION=0.1.6
+mise run release VERSION=0.1.7
 ```
 
 Direct Go commands work as well:
@@ -322,10 +322,10 @@ Continuous integration runs the build and test workflow on Windows, macOS, and L
 To publish a new GitHub release, push a semantic version tag:
 
 ```bash
-mise run release VERSION=0.1.6
+mise run release VERSION=0.1.7
 ```
 
-That task runs tests, creates the `v0.1.6` tag, and pushes it to GitHub.
+That task runs tests, creates the `v0.1.7` tag, and pushes it to GitHub.
 The GitHub Actions release workflow then builds the binaries and publishes the release assets from GitHub-hosted runners.
 
 ## Contributing

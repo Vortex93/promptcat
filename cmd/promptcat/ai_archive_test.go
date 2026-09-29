@@ -64,7 +64,7 @@ export function loadCards(store: CardStore) { return store.getCards(); }
 	if err := json.Unmarshal(data, &manifest); err != nil {
 		t.Fatal(err)
 	}
-	if manifest.Mode != "lazy" || manifest.SchemaVersion != 4 || manifest.FileCount != len(files) {
+	if manifest.Mode != "lazy" || manifest.SchemaVersion != 5 || manifest.FileCount != len(files) {
 		t.Fatalf("unexpected lazy manifest: %#v", manifest)
 	}
 	if manifest.Languages["go"] == 0 || manifest.Languages["typescript"] == 0 {
@@ -122,5 +122,119 @@ func TestApplyArchiveDefaultsForAI(t *testing.T) {
 		if !found {
 			t.Errorf("AI archive patterns missing %q", want)
 		}
+	}
+}
+
+func TestCollectAIRepositoriesAcrossSiblingRepositories(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is required for repository metadata tests")
+	}
+	root := t.TempDir()
+	files := []string{
+		"alpha/alpha.go",
+		"beta/beta.ts",
+		"notes/readme.md",
+	}
+	for _, relative := range files {
+		repositoryPath := filepath.Join(root, filepath.Dir(relative))
+		if err := os.MkdirAll(repositoryPath, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(root, relative), []byte("initial\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	initTestAIRepository(t, filepath.Join(root, "alpha"), "alpha.go")
+	initTestAIRepository(t, filepath.Join(root, "beta"), "beta.ts")
+	if err := os.WriteFile(filepath.Join(root, "alpha", "alpha.go"), []byte("modified\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "beta", "beta.ts"), []byte("modified\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	repositories, err := collectAIRepositories(root, files)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(repositories) != 2 {
+		t.Fatalf("found %d repositories, want 2: %#v", len(repositories), repositories)
+	}
+	wantPaths := []string{"alpha", "beta"}
+	for index, repository := range repositories {
+		if repository.Path != wantPaths[index] {
+			t.Errorf("repository[%d].Path = %q, want %q", index, repository.Path, wantPaths[index])
+		}
+		if !repository.Git.Available || !repository.Git.Dirty {
+			t.Errorf("repository[%q] git metadata = %#v, want available and dirty", repository.Path, repository.Git)
+		}
+		if len(repository.Changes) != 1 || repository.Changes[0].Path != files[index] || !repository.Changes[0].Archived {
+			t.Errorf("repository[%q] changes = %#v", repository.Path, repository.Changes)
+		}
+	}
+
+	destination := t.TempDir()
+	if _, err := writeAIArchivePack(root, files, destination); err != nil {
+		t.Fatal(err)
+	}
+	manifestData, err := os.ReadFile(filepath.Join(destination, aiPackDirectory, "project.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var manifest aiProjectManifest
+	if err := json.Unmarshal(manifestData, &manifest); err != nil {
+		t.Fatal(err)
+	}
+	if len(manifest.Repositories) != 2 || manifest.Repositories[0].Path != "alpha" || manifest.Repositories[1].Path != "beta" {
+		t.Fatalf("manifest.repositories = %#v, want alpha and beta", manifest.Repositories)
+	}
+}
+
+func TestDiscoverAIRepositoryRootsIncludesSelectedRootAndWorktrees(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is required for repository metadata tests")
+	}
+	root := t.TempDir()
+	initTestAIRepository(t, root, "main.go")
+	worktreePath := filepath.Join(root, "linked")
+	if output, err := exec.Command("git", "-C", root, "worktree", "add", "-b", "linked-branch", worktreePath).CombinedOutput(); err != nil {
+		t.Fatalf("create linked worktree: %v\n%s", err, output)
+	}
+
+	repositories, err := discoverAIRepositoryRoots(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantPaths := []string{".", "linked"}
+	if len(repositories) != len(wantPaths) {
+		t.Fatalf("repository roots = %#v, want %v", repositories, wantPaths)
+	}
+	for index, want := range wantPaths {
+		if repositories[index].path != want {
+			t.Errorf("repository[%d].path = %q, want %q", index, repositories[index].path, want)
+		}
+	}
+}
+
+func initTestAIRepository(t *testing.T, root, file string) {
+	t.Helper()
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	filePath := filepath.Join(root, file)
+	if _, err := os.Stat(filePath); os.IsNotExist(err) {
+		if err := os.WriteFile(filePath, []byte("initial\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if output, err := exec.Command("git", "-C", root, "init", "-q").CombinedOutput(); err != nil {
+		t.Fatalf("initialize git repository: %v\n%s", err, output)
+	}
+	if output, err := exec.Command("git", "-C", root, "add", file).CombinedOutput(); err != nil {
+		t.Fatalf("add test file: %v\n%s", err, output)
+	}
+	command := exec.Command("git", "-C", root, "-c", "user.name=Promptcat Test", "-c", "user.email=promptcat-test@example.invalid", "commit", "-q", "-m", "initial")
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("commit test repository: %v\n%s", err, output)
 	}
 }

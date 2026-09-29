@@ -111,15 +111,22 @@ type aiLanguageSummary struct {
 }
 
 type aiProjectManifest struct {
-	SchemaVersion int              `json:"schemaVersion"`
-	Generator     string           `json:"generator"`
-	Version       string           `json:"version"`
-	GeneratedAt   string           `json:"generatedAt"`
-	Mode          string           `json:"mode"`
-	FileCount     int              `json:"fileCount"`
-	Languages     map[string]int   `json:"languages"`
-	Git           aiGitMetadata    `json:"git"`
-	Changes       []aiChangeRecord `json:"changes,omitempty"`
+	SchemaVersion int                  `json:"schemaVersion"`
+	Generator     string               `json:"generator"`
+	Version       string               `json:"version"`
+	GeneratedAt   string               `json:"generatedAt"`
+	Mode          string               `json:"mode"`
+	FileCount     int                  `json:"fileCount"`
+	Languages     map[string]int       `json:"languages"`
+	Git           aiGitMetadata        `json:"git"`
+	Changes       []aiChangeRecord     `json:"changes,omitempty"`
+	Repositories  []aiRepositoryRecord `json:"repositories,omitempty"`
+}
+
+type aiRepositoryRecord struct {
+	Path    string           `json:"path"`
+	Git     aiGitMetadata    `json:"git"`
+	Changes []aiChangeRecord `json:"changes,omitempty"`
 }
 
 var aiRegexCache sync.Map
@@ -150,8 +157,12 @@ func writeAIArchivePack(root string, files []string, destination string) ([]stri
 	}
 
 	gitMetadata, changes := collectAIGitMetadata(root, knownFiles)
+	repositories, err := collectAIRepositories(root, files)
+	if err != nil {
+		return nil, fmt.Errorf("collect repository metadata: %w", err)
+	}
 	manifest := aiProjectManifest{
-		SchemaVersion: 4,
+		SchemaVersion: 5,
 		Generator:     "promptcat",
 		Version:       version,
 		GeneratedAt:   time.Now().UTC().Format(time.RFC3339),
@@ -160,6 +171,7 @@ func writeAIArchivePack(root string, files []string, destination string) ([]stri
 		Languages:     languages,
 		Git:           gitMetadata,
 		Changes:       changes,
+		Repositories:  repositories,
 	}
 
 	if err := writeJSON(filepath.Join(packDir, "project.json"), manifest); err != nil {
@@ -1125,6 +1137,14 @@ func qualifiedAISymbolName(symbol aiSymbolRecord) string {
 }
 
 func collectAIGitMetadata(root string, knownFiles map[string]bool) (aiGitMetadata, []aiChangeRecord) {
+	archivedPaths := make(map[string]string, len(knownFiles))
+	for path := range knownFiles {
+		archivedPaths[path] = path
+	}
+	return collectAIGitMetadataMapped(root, archivedPaths)
+}
+
+func collectAIGitMetadataMapped(root string, archivedPaths map[string]string) (aiGitMetadata, []aiChangeRecord) {
 	metadata := aiGitMetadata{}
 	if _, err := runAIGit(root, "rev-parse", "--is-inside-work-tree"); err != nil {
 		return metadata, nil
@@ -1152,11 +1172,12 @@ func collectAIGitMetadata(root string, knownFiles map[string]bool) (aiGitMetadat
 		if (code[0] == 'R' || code[0] == 'C' || code[1] == 'R' || code[1] == 'C') && index+1 < len(entries) {
 			index++ // -z emits the original path as a second NUL-delimited field.
 		}
-		if !knownFiles[path] {
+		archivePath, archived := archivedPaths[path]
+		if !archived {
 			continue
 		}
 		changes = append(changes, aiChangeRecord{
-			Path:     path,
+			Path:     archivePath,
 			Status:   code,
 			Staged:   code[0] != ' ' && code[0] != '?',
 			Worktree: code[1] != ' ',
@@ -1165,6 +1186,105 @@ func collectAIGitMetadata(root string, knownFiles map[string]bool) (aiGitMetadat
 	}
 	metadata.Dirty = len(changes) > 0
 	return metadata, changes
+}
+
+func collectAIRepositories(root string, files []string) ([]aiRepositoryRecord, error) {
+	repositoryRoots, err := discoverAIRepositoryRoots(root)
+	if err != nil {
+		return nil, err
+	}
+	archivedPaths := make(map[string]string, len(files))
+	for _, file := range files {
+		archivedPaths[filepath.Clean(file)] = filepath.ToSlash(filepath.Clean(file))
+	}
+
+	repositories := make([]aiRepositoryRecord, 0, len(repositoryRoots))
+	for _, repository := range repositoryRoots {
+		repositoryFiles := make(map[string]string)
+		for archivePath, displayPath := range archivedPaths {
+			absoluteFile := filepath.Join(root, archivePath)
+			repositoryPath, relErr := filepath.Rel(repository.root, absoluteFile)
+			if relErr != nil || repositoryPath == ".." || strings.HasPrefix(repositoryPath, ".."+string(filepath.Separator)) || filepath.IsAbs(repositoryPath) {
+				continue
+			}
+			repositoryFiles[filepath.Clean(repositoryPath)] = displayPath
+		}
+		if len(repositoryFiles) == 0 {
+			continue
+		}
+		metadata, changes := collectAIGitMetadataMapped(repository.root, repositoryFiles)
+		if !metadata.Available {
+			continue
+		}
+		repositories = append(repositories, aiRepositoryRecord{
+			Path:    repository.path,
+			Git:     metadata,
+			Changes: changes,
+		})
+	}
+	return repositories, nil
+}
+
+type aiRepositoryRoot struct {
+	path string
+	root string
+}
+
+func discoverAIRepositoryRoots(root string) ([]aiRepositoryRoot, error) {
+	ignored := make(map[string]bool, len(defaultArchiveIgnoredDirs))
+	for _, name := range defaultArchiveIgnoredDirs {
+		ignored[strings.ToLower(name)] = true
+	}
+	root = filepath.Clean(root)
+	byRoot := make(map[string]aiRepositoryRoot)
+	addRepository := func(repositoryRoot string) {
+		repositoryRoot = filepath.Clean(repositoryRoot)
+		relative, err := filepath.Rel(root, repositoryRoot)
+		if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+			// The selected folder can be inside a repository. Represent that
+			// enclosing repository at the selected archive root.
+			relative = "."
+		}
+		path := filepath.ToSlash(relative)
+		byRoot[repositoryRoot] = aiRepositoryRoot{path: path, root: repositoryRoot}
+	}
+
+	if repositoryRoot, err := runAIGit(root, "rev-parse", "--show-toplevel"); err == nil && repositoryRoot != "" {
+		addRepository(repositoryRoot)
+	}
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if path == root || !entry.IsDir() {
+			return nil
+		}
+		if ignored[strings.ToLower(entry.Name())] {
+			return filepath.SkipDir
+		}
+		marker := filepath.Join(path, ".git")
+		if _, err := os.Lstat(marker); err == nil {
+			if repositoryRoot, gitErr := runAIGit(path, "rev-parse", "--show-toplevel"); gitErr == nil && filepath.Clean(repositoryRoot) == filepath.Clean(path) {
+				addRepository(repositoryRoot)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("walk archive folder for repositories: %w", err)
+	}
+
+	repositories := make([]aiRepositoryRoot, 0, len(byRoot))
+	for _, repository := range byRoot {
+		repositories = append(repositories, repository)
+	}
+	sort.Slice(repositories, func(i, j int) bool {
+		if repositories[i].path == repositories[j].path {
+			return repositories[i].root < repositories[j].root
+		}
+		return repositories[i].path < repositories[j].path
+	})
+	return repositories, nil
 }
 
 func runAIGit(root string, args ...string) (string, error) {
@@ -1219,7 +1339,7 @@ Use .promptcat/tools.py to scan the archived source on demand. The tool works wi
 
 ## Recommended workflow
 
-1. Read .promptcat/project.json for lightweight project/language/Git metadata.
+1. Read .promptcat/project.json for lightweight project/language/Git metadata. Its repositories array describes every detected repository by archive-relative path; top-level git and changes fields remain for compatibility.
 2. Start with targeted commands instead of recursively reading the repository.
 3. Prefer symbol/context/search before opening whole files.
 4. Use refs/callers/callees/tests/impact only when the task needs relationship information; they are computed lazily.
