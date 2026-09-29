@@ -37,7 +37,7 @@ combined and preserving the existing root-level metadata fields.
       directories, including per-repository change records.
 - [x] Update project context and user documentation for the `--ai` manifest.
 - [x] Run formatting, full tests, build, vet, and diff checks; fix any failures.
-- [ ] Commit and push the scoped change, then create the next patch release tag
+- [x] Commit and push the scoped change, then create the next patch release tag
       and verify the GitHub release workflow result.
 
 ## Implementation Order
