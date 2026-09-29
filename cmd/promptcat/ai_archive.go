@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"crypto/sha256"
 	_ "embed"
 	"encoding/json"
@@ -121,12 +122,20 @@ type aiProjectManifest struct {
 	Git           aiGitMetadata        `json:"git"`
 	Changes       []aiChangeRecord     `json:"changes,omitempty"`
 	Repositories  []aiRepositoryRecord `json:"repositories,omitempty"`
+	Patches       []aiPatchRecord      `json:"patches,omitempty"`
 }
 
 type aiRepositoryRecord struct {
 	Path    string           `json:"path"`
 	Git     aiGitMetadata    `json:"git"`
 	Changes []aiChangeRecord `json:"changes,omitempty"`
+}
+
+type aiPatchRecord struct {
+	Path       string `json:"path"`
+	Repository string `json:"repository"`
+	Kind       string `json:"kind"`
+	Commit     string `json:"commit,omitempty"`
 }
 
 var aiRegexCache sync.Map
@@ -161,8 +170,12 @@ func writeAIArchivePack(root string, files []string, destination string) ([]stri
 	if err != nil {
 		return nil, fmt.Errorf("collect repository metadata: %w", err)
 	}
+	patches, patchPaths, err := writeAIRepositoryPatches(root, files, repositories, packDir)
+	if err != nil {
+		return nil, fmt.Errorf("collect repository patches: %w", err)
+	}
 	manifest := aiProjectManifest{
-		SchemaVersion: 5,
+		SchemaVersion: 6,
 		Generator:     "promptcat",
 		Version:       version,
 		GeneratedAt:   time.Now().UTC().Format(time.RFC3339),
@@ -172,6 +185,7 @@ func writeAIArchivePack(root string, files []string, destination string) ([]stri
 		Git:           gitMetadata,
 		Changes:       changes,
 		Repositories:  repositories,
+		Patches:       patches,
 	}
 
 	if err := writeJSON(filepath.Join(packDir, "project.json"), manifest); err != nil {
@@ -184,11 +198,12 @@ func writeAIArchivePack(root string, files []string, destination string) ([]stri
 		return nil, fmt.Errorf("write AI tools: %w", err)
 	}
 
-	return []string{
+	packFiles := []string{
 		filepath.ToSlash(filepath.Join(aiPackDirectory, "AI_INSTRUCTIONS.md")),
 		filepath.ToSlash(filepath.Join(aiPackDirectory, "tools.py")),
 		filepath.ToSlash(filepath.Join(aiPackDirectory, "project.json")),
-	}, nil
+	}
+	return append(packFiles, patchPaths...), nil
 }
 func writeJSON(path string, value any) error {
 	file, err := os.Create(path)
@@ -1193,22 +1208,11 @@ func collectAIRepositories(root string, files []string) ([]aiRepositoryRecord, e
 	if err != nil {
 		return nil, err
 	}
-	archivedPaths := make(map[string]string, len(files))
-	for _, file := range files {
-		archivedPaths[filepath.Clean(file)] = filepath.ToSlash(filepath.Clean(file))
-	}
+	filesByRepository := archiveFilesByRepository(root, files, repositoryRoots)
 
 	repositories := make([]aiRepositoryRecord, 0, len(repositoryRoots))
 	for _, repository := range repositoryRoots {
-		repositoryFiles := make(map[string]string)
-		for archivePath, displayPath := range archivedPaths {
-			absoluteFile := filepath.Join(root, archivePath)
-			repositoryPath, relErr := filepath.Rel(repository.root, absoluteFile)
-			if relErr != nil || repositoryPath == ".." || strings.HasPrefix(repositoryPath, ".."+string(filepath.Separator)) || filepath.IsAbs(repositoryPath) {
-				continue
-			}
-			repositoryFiles[filepath.Clean(repositoryPath)] = displayPath
-		}
+		repositoryFiles := filesByRepository[repository.root]
 		if len(repositoryFiles) == 0 {
 			continue
 		}
@@ -1223,6 +1227,159 @@ func collectAIRepositories(root string, files []string) ([]aiRepositoryRecord, e
 		})
 	}
 	return repositories, nil
+}
+
+func archiveFilesByRepository(root string, files []string, repositories []aiRepositoryRoot) map[string]map[string]string {
+	filesByRepository := make(map[string]map[string]string, len(repositories))
+	for _, file := range files {
+		cleanPath := filepath.Clean(file)
+		absoluteFile := filepath.Join(root, cleanPath)
+		var owner aiRepositoryRoot
+		ownerLength := -1
+		for _, repository := range repositories {
+			relative, err := filepath.Rel(repository.root, absoluteFile)
+			if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) || filepath.IsAbs(relative) {
+				continue
+			}
+			if len(repository.root) > ownerLength {
+				owner = repository
+				ownerLength = len(repository.root)
+			}
+		}
+		if ownerLength < 0 {
+			continue
+		}
+		repositoryPath, err := filepath.Rel(owner.root, absoluteFile)
+		if err != nil {
+			continue
+		}
+		if filesByRepository[owner.root] == nil {
+			filesByRepository[owner.root] = make(map[string]string)
+		}
+		filesByRepository[owner.root][filepath.Clean(repositoryPath)] = filepath.ToSlash(cleanPath)
+	}
+	return filesByRepository
+}
+
+func writeAIRepositoryPatches(root string, files []string, repositories []aiRepositoryRecord, packDir string) ([]aiPatchRecord, []string, error) {
+	if len(repositories) == 0 {
+		return nil, nil, nil
+	}
+	repositoryRoots, err := discoverAIRepositoryRoots(root)
+	if err != nil {
+		return nil, nil, err
+	}
+	rootsByPath := make(map[string]aiRepositoryRoot, len(repositoryRoots))
+	for _, repository := range repositoryRoots {
+		rootsByPath[repository.path] = repository
+	}
+	filesByRepository := archiveFilesByRepository(root, files, repositoryRoots)
+
+	patchRecords := make([]aiPatchRecord, 0)
+	patchPaths := make([]string, 0)
+	for _, repository := range repositories {
+		repositoryRoot, ok := rootsByPath[repository.Path]
+		if !ok {
+			continue
+		}
+		repositoryFiles := filesByRepository[repositoryRoot.root]
+		pathspecs := make([]string, 0, len(repositoryFiles))
+		for repositoryPath := range repositoryFiles {
+			pathspecs = append(pathspecs, ":(literal)"+filepath.ToSlash(repositoryPath))
+		}
+		sort.Strings(pathspecs)
+		if len(pathspecs) == 0 {
+			continue
+		}
+
+		directory := aiRepositoryPatchDirectory(repository.Path)
+		patchDirectory := filepath.Join(packDir, "patches", directory)
+		base := resolveAIArchiveBase(repositoryRoot.root)
+		if base != "" {
+			commits, revErr := runAIGit(repositoryRoot.root, "rev-list", "--reverse", base+"..HEAD")
+			if revErr != nil {
+				return nil, nil, fmt.Errorf("list commits for repository %s: %w", repository.Path, revErr)
+			}
+			for _, commit := range strings.Fields(commits) {
+				arguments := []string{"format-patch", "-1", "--stdout", "--binary", "--full-index", "--no-signature", commit, "--"}
+				arguments = append(arguments, pathspecs...)
+				patch, patchErr := runAIGitPatch(repositoryRoot.root, arguments...)
+				if patchErr != nil {
+					return nil, nil, fmt.Errorf("format commit %s for repository %s: %w", commit, repository.Path, patchErr)
+				}
+				if !bytes.Contains(patch, []byte("diff --git ")) {
+					continue
+				}
+				name := commit + ".patch"
+				path := filepath.Join(patchDirectory, name)
+				if err := writeAIPatch(path, patch); err != nil {
+					return nil, nil, err
+				}
+				archivePath := filepath.ToSlash(filepath.Join(aiPackDirectory, "patches", directory, name))
+				patchPaths = append(patchPaths, archivePath)
+				patchRecords = append(patchRecords, aiPatchRecord{Path: archivePath, Repository: repository.Path, Kind: "commit", Commit: commit})
+			}
+		}
+
+		worktreePatch, patchErr := runAIGitPatch(repositoryRoot.root, append([]string{"diff", "--binary", "--full-index", "HEAD", "--"}, pathspecs...)...)
+		if patchErr != nil {
+			return nil, nil, fmt.Errorf("diff worktree for repository %s: %w", repository.Path, patchErr)
+		}
+		if len(worktreePatch) > 0 {
+			const name = "worktree.patch"
+			path := filepath.Join(patchDirectory, name)
+			if err := writeAIPatch(path, worktreePatch); err != nil {
+				return nil, nil, err
+			}
+			archivePath := filepath.ToSlash(filepath.Join(aiPackDirectory, "patches", directory, name))
+			patchPaths = append(patchPaths, archivePath)
+			patchRecords = append(patchRecords, aiPatchRecord{Path: archivePath, Repository: repository.Path, Kind: "worktree"})
+		}
+	}
+	sort.Strings(patchPaths)
+	sort.Slice(patchRecords, func(i, j int) bool { return patchRecords[i].Path < patchRecords[j].Path })
+	return patchRecords, patchPaths, nil
+}
+
+func aiRepositoryPatchDirectory(repositoryPath string) string {
+	if repositoryPath == "." {
+		return "root"
+	}
+	return filepath.Join("repo", filepath.FromSlash(repositoryPath))
+}
+
+func resolveAIArchiveBase(repositoryRoot string) string {
+	if base, err := runAIGit(repositoryRoot, "rev-parse", "--verify", "origin/HEAD^{commit}"); err == nil && base != "" {
+		return base
+	}
+	if base, err := runAIGit(repositoryRoot, "rev-parse", "--verify", "@{upstream}^{commit}"); err == nil && base != "" {
+		return base
+	}
+	return ""
+}
+
+func runAIGitPatch(root string, args ...string) ([]byte, error) {
+	command := exec.Command("git", append([]string{"-C", root}, args...)...)
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	command.Stdout = &stdout
+	command.Stderr = &stderr
+	if err := command.Run(); err != nil {
+		if exitErr, ok := err.(*exec.ExitError); !ok || args[0] != "diff" || exitErr.ExitCode() != 1 {
+			return nil, fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
+		}
+	}
+	return stdout.Bytes(), nil
+}
+
+func writeAIPatch(path string, patch []byte) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("create patch directory: %w", err)
+	}
+	if err := os.WriteFile(path, patch, 0o644); err != nil {
+		return fmt.Errorf("write patch %s: %w", filepath.Base(path), err)
+	}
+	return nil
 }
 
 type aiRepositoryRoot struct {
@@ -1339,7 +1496,7 @@ Use .promptcat/tools.py to scan the archived source on demand. The tool works wi
 
 ## Recommended workflow
 
-1. Read .promptcat/project.json for lightweight project/language/Git metadata. Its repositories array describes every detected repository by archive-relative path; top-level git and changes fields remain for compatibility.
+1. Read .promptcat/project.json for lightweight project/language/Git metadata. Its repositories array describes every detected repository by archive-relative path; top-level git and changes fields remain for compatibility. Patch records list included per-commit and worktree patches under .promptcat/patches/.
 2. Start with targeted commands instead of recursively reading the repository.
 3. Prefer symbol/context/search before opening whole files.
 4. Use refs/callers/callees/tests/impact only when the task needs relationship information; they are computed lazily.

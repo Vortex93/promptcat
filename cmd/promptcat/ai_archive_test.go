@@ -1,7 +1,10 @@
 package main
 
 import (
+	"archive/tar"
+	"bytes"
 	"encoding/json"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -64,7 +67,7 @@ export function loadCards(store: CardStore) { return store.getCards(); }
 	if err := json.Unmarshal(data, &manifest); err != nil {
 		t.Fatal(err)
 	}
-	if manifest.Mode != "lazy" || manifest.SchemaVersion != 5 || manifest.FileCount != len(files) {
+	if manifest.Mode != "lazy" || manifest.SchemaVersion != 6 || manifest.FileCount != len(files) {
 		t.Fatalf("unexpected lazy manifest: %#v", manifest)
 	}
 	if manifest.Languages["go"] == 0 || manifest.Languages["typescript"] == 0 {
@@ -216,6 +219,219 @@ func TestDiscoverAIRepositoryRootsIncludesSelectedRootAndWorktrees(t *testing.T)
 	}
 }
 
+func TestWriteAIRepositoryPatchesIncludesCommitsAndFilteredWorktree(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is required for repository patch tests")
+	}
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "included.go"), []byte("package example\n\nconst Value = 1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "excluded.json"), []byte("{\"secret\":\"baseline\"}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	initTestAIRepository(t, root, "included.go")
+	runTestAIGit(t, root, "add", "excluded.json")
+	runTestAIGit(t, root, "-c", "user.name=Promptcat Test", "-c", "user.email=promptcat-test@example.invalid", "commit", "-q", "-m", "add excluded data")
+	base := runTestAIGit(t, root, "rev-parse", "HEAD")
+	runTestAIGit(t, root, "update-ref", "refs/remotes/origin/base", base)
+	runTestAIGit(t, root, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/base")
+	if err := os.WriteFile(filepath.Join(root, "included.go"), []byte("package example\n\nconst Value = 2\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runTestAIGit(t, root, "add", "included.go")
+	runTestAIGit(t, root, "-c", "user.name=Promptcat Test", "-c", "user.email=promptcat-test@example.invalid", "commit", "-q", "-m", "first worktree commit")
+	firstCommit := runTestAIGit(t, root, "rev-parse", "HEAD")
+	if err := os.WriteFile(filepath.Join(root, "included.go"), []byte("package example\n\nconst Value = 3\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runTestAIGit(t, root, "add", "included.go")
+	runTestAIGit(t, root, "-c", "user.name=Promptcat Test", "-c", "user.email=promptcat-test@example.invalid", "commit", "-q", "-m", "second worktree commit")
+	secondCommit := runTestAIGit(t, root, "rev-parse", "HEAD")
+	if err := os.WriteFile(filepath.Join(root, "included.go"), []byte("package example\n\nconst Value = 4 // staged\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runTestAIGit(t, root, "add", "included.go")
+	if err := os.WriteFile(filepath.Join(root, "included.go"), []byte("package example\n\nconst Value = 4 // unstaged\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "excluded.json"), []byte("{\"secret\":\"must-not-be-in-patch\"}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	repositories, err := collectAIRepositories(root, []string{"included.go"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(repositories) != 1 || repositories[0].Path != "." {
+		t.Fatalf("repositories = %#v, want only the selected root repository", repositories)
+	}
+	packDir := t.TempDir()
+	patches, paths, err := writeAIRepositoryPatches(root, []string{"included.go"}, repositories, packDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(patches) != 3 || len(paths) != 3 {
+		t.Fatalf("patch count = %d/%d, want two commits and one worktree patch: %#v", len(patches), len(paths), patches)
+	}
+	wantPaths := map[string]bool{
+		".promptcat/patches/root/" + firstCommit + ".patch":  false,
+		".promptcat/patches/root/" + secondCommit + ".patch": false,
+		".promptcat/patches/root/worktree.patch":             false,
+	}
+	for _, patch := range patches {
+		if _, ok := wantPaths[patch.Path]; !ok {
+			t.Errorf("unexpected patch metadata path %q", patch.Path)
+		}
+		wantPaths[patch.Path] = true
+		data, err := os.ReadFile(filepath.Join(packDir, filepath.FromSlash(strings.TrimPrefix(patch.Path, aiPackDirectory+"/"))))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(data), "included.go") {
+			t.Errorf("patch %q does not contain included.go", patch.Path)
+		}
+		if strings.Contains(string(data), "excluded.json") || strings.Contains(string(data), "must-not-be-in-patch") {
+			t.Errorf("patch %q leaked an excluded file", patch.Path)
+		}
+	}
+	for path, found := range wantPaths {
+		if !found {
+			t.Errorf("missing expected patch %q", path)
+		}
+	}
+
+	destination := t.TempDir()
+	packFiles, err := writeAIArchivePack(root, []string{"included.go"}, destination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for path := range wantPaths {
+		found := false
+		for _, packFile := range packFiles {
+			if packFile == path {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("AI pack file list does not include patch %q", path)
+		}
+	}
+	manifestData, err := os.ReadFile(filepath.Join(destination, aiPackDirectory, "project.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var manifest aiProjectManifest
+	if err := json.Unmarshal(manifestData, &manifest); err != nil {
+		t.Fatal(err)
+	}
+	if len(manifest.Patches) != 3 {
+		t.Errorf("manifest patch records = %#v, want two commit patches and one worktree patch", manifest.Patches)
+	}
+	if _, err := exec.LookPath("zstd"); err == nil {
+		opts := options{
+			archiveAI:       true,
+			archivePatterns: []string{"**.go"},
+			archiveOutput:   "result.tar.zst",
+			inputs:          []string{root},
+		}
+		applyArchiveDefaults(&opts)
+		if err := runArchive(opts, io.Discard); err != nil {
+			t.Fatalf("create AI archive with patches: %v", err)
+		}
+		archivePath := filepath.Join(root, "result.tar.zst")
+		compressed, err := exec.Command("zstd", "-d", "-q", "-c", archivePath).Output()
+		if err != nil {
+			t.Fatalf("decompress generated archive: %v", err)
+		}
+		reader := tar.NewReader(bytes.NewReader(compressed))
+		archiveEntries := make(map[string]bool)
+		for {
+			header, err := reader.Next()
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				t.Fatalf("read generated archive: %v", err)
+			}
+			archiveEntries[header.Name] = true
+		}
+		for path := range wantPaths {
+			if !archiveEntries[path] {
+				t.Errorf("generated tar.zst is missing patch %q", path)
+			}
+		}
+	} else {
+		t.Log("zstd is unavailable; skipped compressed archive smoke test")
+	}
+}
+
+func TestResolveAIArchiveBaseFallsBackToConfiguredUpstream(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is required for repository patch tests")
+	}
+	root := t.TempDir()
+	initTestAIRepository(t, root, "main.go")
+	base := runTestAIGit(t, root, "rev-parse", "HEAD")
+	runTestAIGit(t, root, "branch", "topic", base)
+	runTestAIGit(t, root, "branch", "--set-upstream-to=topic")
+	if got := resolveAIArchiveBase(root); got != base {
+		t.Fatalf("resolveAIArchiveBase() = %q, want upstream commit %q", got, base)
+	}
+}
+
+func TestArchiveFilesByRepositoryAssignsFilesToInnermostRepository(t *testing.T) {
+	root := t.TempDir()
+	repositories := []aiRepositoryRoot{
+		{path: ".", root: root},
+		{path: "nested", root: filepath.Join(root, "nested")},
+	}
+	files := []string{"root.go", "nested/module.go"}
+	got := archiveFilesByRepository(root, files, repositories)
+	if len(got[root]) != 1 || got[root]["root.go"] != "root.go" {
+		t.Errorf("outer repository files = %#v, want only root.go", got[root])
+	}
+	if len(got[repositories[1].root]) != 1 || got[repositories[1].root]["module.go"] != "nested/module.go" {
+		t.Errorf("nested repository files = %#v, want module.go mapped to nested/module.go", got[repositories[1].root])
+	}
+}
+
+func TestWriteAIRepositoryPatchesPlacesNestedRepositoryUnderRepoPath(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is required for repository patch tests")
+	}
+	archiveRoot := t.TempDir()
+	repositoryRoot := filepath.Join(archiveRoot, "nested")
+	initTestAIRepository(t, repositoryRoot, "module.go")
+	base := runTestAIGit(t, repositoryRoot, "rev-parse", "HEAD")
+	runTestAIGit(t, repositoryRoot, "update-ref", "refs/remotes/origin/base", base)
+	runTestAIGit(t, repositoryRoot, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/base")
+	if err := os.WriteFile(filepath.Join(repositoryRoot, "module.go"), []byte("package module\n\nconst Value = 2\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runTestAIGit(t, repositoryRoot, "add", "module.go")
+	runTestAIGit(t, repositoryRoot, "-c", "user.name=Promptcat Test", "-c", "user.email=promptcat-test@example.invalid", "commit", "-q", "-m", "nested feature")
+	commit := runTestAIGit(t, repositoryRoot, "rev-parse", "HEAD")
+
+	repositories, err := collectAIRepositories(archiveRoot, []string{"nested/module.go"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(repositories) != 1 || repositories[0].Path != "nested" {
+		t.Fatalf("repositories = %#v, want nested repository", repositories)
+	}
+	packDir := t.TempDir()
+	patches, _, err := writeAIRepositoryPatches(archiveRoot, []string{"nested/module.go"}, repositories, packDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantPath := ".promptcat/patches/repo/nested/" + commit + ".patch"
+	if len(patches) != 1 || patches[0].Path != wantPath {
+		t.Fatalf("patches = %#v, want patch at %q", patches, wantPath)
+	}
+}
+
 func initTestAIRepository(t *testing.T, root, file string) {
 	t.Helper()
 	if err := os.MkdirAll(root, 0o755); err != nil {
@@ -237,4 +453,14 @@ func initTestAIRepository(t *testing.T, root, file string) {
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("commit test repository: %v\n%s", err, output)
 	}
+}
+
+func runTestAIGit(t *testing.T, root string, args ...string) string {
+	t.Helper()
+	command := exec.Command("git", append([]string{"-C", root}, args...)...)
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, output)
+	}
+	return strings.TrimSpace(string(output))
 }
