@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -354,6 +355,20 @@ func TestExpandInputMatchesAbsoluteGlob(t *testing.T) {
 	got := expandInput(filepath.Join(tempDir, "*.txt"), nil)
 	if !reflect.DeepEqual(got, paths) {
 		t.Fatalf("expandInput returned %#v, want %#v", got, paths)
+	}
+}
+
+func TestPathContainsSymlinkAllowsMacOSTemporaryDirectory(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("macOS system path aliases are platform-specific")
+	}
+
+	containsSymlink, err := pathContainsSymlink(t.TempDir(), ".")
+	if err != nil {
+		t.Fatalf("pathContainsSymlink returned error: %v", err)
+	}
+	if containsSymlink {
+		t.Fatal("macOS temporary directory was treated as a symlink path")
 	}
 }
 

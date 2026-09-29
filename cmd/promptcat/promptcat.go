@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -110,11 +111,13 @@ func pathContainsSymlink(path, boundary string) (bool, error) {
 		return false, err
 	}
 	current = filepath.Clean(current)
+	current = canonicalSystemPathAlias(current)
 	boundary, err = filepath.Abs(boundary)
 	if err != nil {
 		boundary = ""
 	}
 	boundary = filepath.Clean(boundary)
+	boundary = canonicalSystemPathAlias(boundary)
 	withinBoundary := false
 	if boundary != "" {
 		relative, relErr := filepath.Rel(boundary, current)
@@ -138,6 +141,34 @@ func pathContainsSymlink(path, boundary string) (bool, error) {
 		}
 		current = parent
 	}
+}
+
+func canonicalSystemPathAlias(path string) string {
+	if runtime.GOOS != "darwin" {
+		return path
+	}
+
+	for _, alias := range []string{"/etc", "/tmp", "/var"} {
+		relative, err := filepath.Rel(alias, path)
+		if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+			continue
+		}
+
+		info, err := os.Lstat(alias)
+		if err != nil || info.Mode()&os.ModeSymlink == 0 {
+			continue
+		}
+		resolved, err := filepath.EvalSymlinks(alias)
+		if err != nil || resolved != filepath.Join("/private", filepath.Base(alias)) {
+			continue
+		}
+		if relative == "." {
+			return resolved
+		}
+		return filepath.Join(resolved, relative)
+	}
+
+	return path
 }
 
 func isProbablyText(data []byte) bool {
