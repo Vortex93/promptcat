@@ -10,7 +10,7 @@ run = "bun scripts/build.mjs"
 
 [tasks.deploy]
 description = "Alias for release"
-run = "mise run release VERSION=$VERSION"
+run = "bun scripts/release.mjs"
 
 [tasks.install]
 description = "Install promptcat into GOBIN or GOPATH/bin"

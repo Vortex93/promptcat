@@ -1,6 +1,6 @@
 import { $ } from 'zx'
 
-const version = process.env.VERSION
+const version = process.env.VERSION ?? process.argv[2]?.replace(/^VERSION=/, '')
 if (!version || !/^\d+\.\d+\.\d+$/.test(version)) {
   throw new Error('Usage: mise run release VERSION=0.1.0')
 }
