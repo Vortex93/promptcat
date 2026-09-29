@@ -157,7 +157,10 @@ promptcat archive --include=**.json,**.yaml
 promptcat archive --pattern=**.js,**.ts --output=source.tar.zst
 promptcat archive --max-size=10MB
 promptcat archive --ai --output=source.tar.zst
+promptcat archive --exclude-repo=apps/legacy --exclude-repo=vendor/tool
 ```
+
+Use `--exclude-repo=PATH` to omit a repository folder and everything beneath it from the archive. Paths are relative to the archive folder; repeat the option to exclude more than one folder. This also removes those files from `--ai` repository metadata and patches.
 
 `--ai` adds a lightweight `.promptcat/` navigator and project metadata. The metadata lists each Git repository found under the selected folder (including linked worktrees) with its archive-relative path, branch/commit, changes to included files, and patch paths. Under `.promptcat/patches/`, root-repository patches go in `root/` and nested repositories go under `repo/<repo-path>/`. Each contains one `<commit-hash>.patch` per commit ahead of `origin/HEAD` (falling back to the configured upstream when the remote default branch is unavailable), plus `worktree.patch` for staged and unstaged tracked-file edits. Patch contents are restricted to files included in the archive; untracked files are included as source files but not repeated in the patch. Multiple repositories stay together in one archive. The included Python tool builds symbol and relationship indexes when used, so creating the archive does not need to analyze every source file up front. It works with both formatted (`export.txt`) and `--files` archive layouts.
 
@@ -221,6 +224,7 @@ Directories passed directly are skipped.
 | `--max-size=1MB` | Set the maximum archive file size; defaults to 1 MiB for archives |
 | `--files` | Store matching files separately instead of generating `export.txt` |
 | `--ai` | Add the lightweight AI navigation tool and project metadata |
+| `--exclude-repo=PATH` | Exclude a repository folder and its contents (repeatable; relative to the archive folder) |
 | `--clipboard` | Also copy the generated archive file to the clipboard; cannot be combined with `--files` |
 | `autocomplete [shell]` | Print completion for Bash, Fish, Zsh, or PowerShell |
 | `autocomplete install [shell]` | Install completion, detecting the current shell when omitted |
@@ -232,6 +236,7 @@ Directories passed directly are skipped.
 Notes:
 - Extensions can be written with or without a leading dot
 - `--include`, `--exclude`, and `--ignore-dir` accept comma-separated values
+- `--exclude-repo` accepts one folder path per option; paths are relative to the archive folder
 - `--max-size` accepts bytes or suffixes such as `KB`, `MB`, `GB`, `KiB`, and `MiB`
 - Binary files are skipped automatically
 - Symbolic links are skipped automatically

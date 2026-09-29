@@ -117,7 +117,7 @@ const bashAutocomplete = `# promptcat bash completion
 _promptcat() {
     local cur=${COMP_WORDS[COMP_CWORD]}
     local commands="auto archive update autocomplete clipboard"
-    local options="--help --version --upgrade --max-size --fullpath --include --pattern --output --files --clipboard --ai --exclude --ignore-dir"
+    local options="--help --version --upgrade --max-size --fullpath --include --pattern --output --files --clipboard --ai --exclude --ignore-dir --exclude-repo"
     if [[ ${COMP_CWORD} -eq 1 ]]; then
         COMPREPLY=($(compgen -W "${commands} ${options}" -- "${cur}"))
     elif [[ ${COMP_WORDS[1]} == autocomplete && ${COMP_CWORD} -eq 2 ]]; then
@@ -148,6 +148,7 @@ complete -c promptcat -n '__fish_seen_subcommand_from archive' -l clipboard -d '
 complete -c promptcat -n '__fish_seen_subcommand_from archive' -l ai -d 'Add AI navigation pack'
 complete -c promptcat -n '__fish_seen_subcommand_from archive' -l max-size -r -d 'Maximum file size'
 complete -c promptcat -n '__fish_seen_subcommand_from archive' -l ignore-dir -r -d 'Ignored directory'
+complete -c promptcat -n '__fish_seen_subcommand_from archive' -l exclude-repo -r -d 'Exclude repository folder'
 complete -c promptcat -n '__fish_seen_subcommand_from archive' -a '(__fish_complete_path)'
 `
 
@@ -169,6 +170,7 @@ _promptcat() {
         '--ai[Add AI navigation pack]' \\
         '--exclude=[Exclude extensions]' \\
         '--ignore-dir=[Ignore directory]' \\
+        '--exclude-repo=[Exclude repository folder]' \\
         '*:file:_files'
 }
 
@@ -178,7 +180,7 @@ _promptcat "$@"
 const powershellAutocomplete = `Register-ArgumentCompleter -Native -CommandName promptcat -ScriptBlock {
     param($wordToComplete, $commandAst, $cursorPosition)
     $commands = @('auto', 'archive', 'update', 'autocomplete', 'clipboard')
-    $options = @('--help', '--version', '--upgrade', '--max-size', '--fullpath', '--include', '--pattern', '--output', '--files', '--clipboard', '--ai', '--exclude', '--ignore-dir')
+    $options = @('--help', '--version', '--upgrade', '--max-size', '--fullpath', '--include', '--pattern', '--output', '--files', '--clipboard', '--ai', '--exclude', '--ignore-dir', '--exclude-repo')
     $tokens = $commandAst.CommandElements | ForEach-Object { $_.ToString() }
     $candidates = if ($tokens.Count -le 1) { $commands + $options } else { $options }
     $candidates | Where-Object { $_ -like "$wordToComplete*" } | ForEach-Object {

@@ -212,6 +212,7 @@ type options struct {
 	include             map[string]bool
 	archiveIncludes     []string
 	archivePatterns     []string
+	archiveExcludeRepos []string
 	archiveOutput       string
 	exclude             map[string]bool
 	ignoredDirs         map[string]bool
@@ -332,6 +333,13 @@ func parseArgs(args []string) (options, error) {
 			}
 			opts.ignoredDirs = parseDirs(args[i])
 
+		case arg == "--exclude-repo":
+			i++
+			if i >= len(args) || strings.HasPrefix(args[i], "-") {
+				return opts, flagError("missing value for --exclude-repo")
+			}
+			opts.archiveExcludeRepos = append(opts.archiveExcludeRepos, args[i])
+
 		case strings.HasPrefix(arg, "--include="):
 			value := strings.TrimPrefix(arg, "--include=")
 			if value == "" {
@@ -384,6 +392,13 @@ func parseArgs(args []string) (options, error) {
 			}
 			opts.ignoredDirs = parseDirs(value)
 
+		case strings.HasPrefix(arg, "--exclude-repo="):
+			value := strings.TrimPrefix(arg, "--exclude-repo=")
+			if value == "" {
+				return opts, flagError("missing value for --exclude-repo")
+			}
+			opts.archiveExcludeRepos = append(opts.archiveExcludeRepos, value)
+
 		case strings.HasPrefix(arg, "ignore-dir="):
 			value := strings.TrimPrefix(arg, "ignore-dir=")
 			if value == "" {
@@ -433,6 +448,9 @@ func parseArgs(args []string) (options, error) {
 	if opts.archiveAI && !opts.archive {
 		return opts, flagError("--ai requires the archive command")
 	}
+	if len(opts.archiveExcludeRepos) > 0 && !opts.archive {
+		return opts, flagError("--exclude-repo requires the archive command")
+	}
 
 	if opts.archive {
 		if opts.auto || opts.upgrade || opts.fullPath || opts.exclude != nil || len(opts.excludePatterns) > 0 {
@@ -440,6 +458,11 @@ func parseArgs(args []string) (options, error) {
 		}
 		if len(opts.inputs) > 1 {
 			return opts, flagError("archive accepts at most one folder")
+		}
+		for _, repoPath := range opts.archiveExcludeRepos {
+			if err := validateArchiveRepoPath(repoPath); err != nil {
+				return opts, err
+			}
 		}
 		if opts.archiveFiles && opts.archiveClipboard {
 			return opts, flagError("archive --clipboard cannot be combined with --files")
@@ -541,6 +564,7 @@ Options:
                          Archive output path
   --files                Store matching files separately instead of export.txt
   --ai                   Add a lazy AI navigation pack to the archive
+  --exclude-repo=PATH    Exclude a repository folder and its contents (repeatable)
   autocomplete install  Install shell completion (bash, fish, zsh, powershell)
   clipboard              Copy normal formatted output to the system clipboard
   --exclude=json        Exclude extensions
@@ -563,6 +587,7 @@ Examples:
   promptcat archive --pattern=**.js,**.ts --output=src.tar.zst
   promptcat archive --files
   promptcat archive --ai
+  promptcat archive --exclude-repo=apps/legacy
   promptcat autocomplete bash
   promptcat autocomplete install fish
   promptcat clipboard README.md
@@ -689,6 +714,10 @@ func expandInput(input string, ignoredDirs map[string]bool) []string {
 }
 
 func expandInputs(inputs, excludePatterns []string, ignoredDirs map[string]bool) ([]string, error) {
+	return expandInputsWithExcludedPaths(inputs, excludePatterns, ignoredDirs, nil)
+}
+
+func expandInputsWithExcludedPaths(inputs, excludePatterns []string, ignoredDirs map[string]bool, excludedPaths []string) ([]string, error) {
 	excludeMatchers := make([]*regexp.Regexp, 0, len(excludePatterns))
 	for _, pattern := range excludePatterns {
 		matcher, err := globToRegex(pattern)
@@ -766,6 +795,9 @@ func expandInputs(inputs, excludePatterns []string, ignoredDirs map[string]bool)
 				return nil
 			}
 			if entry.IsDir() {
+				if isWithinAnyPath(path, excludedPaths) {
+					return filepath.SkipDir
+				}
 				if ignoredDirs != nil && ignoredDirs[strings.ToLower(entry.Name())] {
 					return filepath.SkipDir
 				}
@@ -824,6 +856,27 @@ func expandInputs(inputs, excludePatterns []string, ignoredDirs map[string]bool)
 	}
 
 	return expanded, nil
+}
+
+func validateArchiveRepoPath(repoPath string) error {
+	if strings.TrimSpace(repoPath) == "" {
+		return flagError("--exclude-repo path cannot be empty")
+	}
+	normalized := filepath.Clean(filepath.FromSlash(repoPath))
+	if filepath.IsAbs(normalized) || filepath.VolumeName(normalized) != "" || normalized == ".." || strings.HasPrefix(normalized, ".."+string(filepath.Separator)) {
+		return flagError(fmt.Sprintf("--exclude-repo path must be relative to the archive folder: %q", repoPath))
+	}
+	return nil
+}
+
+func isWithinAnyPath(path string, roots []string) bool {
+	for _, root := range roots {
+		relative, err := filepath.Rel(root, path)
+		if err == nil && (relative == "." || (relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)))) {
+			return true
+		}
+	}
+	return false
 }
 
 func simpleExtensionGlob(pattern string) string {

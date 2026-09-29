@@ -89,7 +89,11 @@ func runArchive(opts options, stderr io.Writer) error {
 	for _, pattern := range opts.archivePatterns {
 		inputs = append(inputs, filepath.Join(root, filepath.FromSlash(pattern)))
 	}
-	paths, err := expandInputs(inputs, nil, opts.ignoredDirs)
+	excludedRepoPaths := make([]string, 0, len(opts.archiveExcludeRepos))
+	for _, repoPath := range opts.archiveExcludeRepos {
+		excludedRepoPaths = append(excludedRepoPaths, filepath.Join(root, filepath.FromSlash(repoPath)))
+	}
+	paths, err := expandInputsWithExcludedPaths(inputs, nil, opts.ignoredDirs, excludedRepoPaths)
 	if err != nil {
 		return fmt.Errorf("expand archive patterns: %w", err)
 	}

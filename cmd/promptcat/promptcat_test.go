@@ -119,6 +119,55 @@ func TestParseArgsArchivePatterns(t *testing.T) {
 	}
 }
 
+func TestParseArgsArchiveRepoExclusions(t *testing.T) {
+	opts, err := parseArgs([]string{"archive", "--exclude-repo=apps/old", "--exclude-repo", "vendor/tool"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"apps/old", "vendor/tool"}
+	if !reflect.DeepEqual(opts.archiveExcludeRepos, want) {
+		t.Fatalf("archiveExcludeRepos = %#v, want %#v", opts.archiveExcludeRepos, want)
+	}
+
+	for _, args := range [][]string{
+		{"archive", "--exclude-repo"},
+		{"archive", "--exclude-repo="},
+		{"archive", "--exclude-repo=../outside"},
+		{"--exclude-repo=apps/old"},
+	} {
+		if _, err := parseArgs(args); err == nil {
+			t.Errorf("parseArgs(%#v) unexpectedly succeeded", args)
+		}
+	}
+}
+
+func TestUsageDocumentsArchiveRepoExclusion(t *testing.T) {
+	if !strings.Contains(usage(), "--exclude-repo=PATH") {
+		t.Fatal("usage does not document --exclude-repo")
+	}
+}
+
+func TestExpandInputsPrunesExcludedRepositoryFolder(t *testing.T) {
+	root := t.TempDir()
+	writeAutoFiles(t, root, map[string]string{
+		"apps/keep/main.go":         "package keep\n",
+		"apps/drop/main.go":         "package drop\n",
+		"apps/drop/nested/child.go": "package child\n",
+	})
+
+	got, err := expandInputsWithExcludedPaths(
+		[]string{filepath.Join(root, "**.go")}, nil, nil,
+		[]string{filepath.Join(root, "apps", "drop")},
+	)
+	if err != nil {
+		t.Fatalf("expandInputsWithExcludedPaths returned error: %v", err)
+	}
+	want := []string{filepath.Join(root, "apps", "keep", "main.go")}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("expanded files = %#v, want %#v", got, want)
+	}
+}
+
 func TestDefaultArchivePatternsCoverSupportedFiles(t *testing.T) {
 	for _, extension := range []string{
 		"js", "mjs", "jsx", "ts", "tsx", "py", "go", "rs", "css", "scss", "html", "vue", "svelte",
@@ -171,6 +220,9 @@ func TestAutocompleteScripts(t *testing.T) {
 		}
 		if !strings.Contains(script, "--ai") && !strings.Contains(script, "-l ai") {
 			t.Errorf("%s completion does not mention --ai", shell)
+		}
+		if !strings.Contains(script, "--exclude-repo") && !strings.Contains(script, "-l exclude-repo") {
+			t.Errorf("%s completion does not mention --exclude-repo", shell)
 		}
 	}
 	if _, err := autocompleteScript("unknown"); err == nil {
