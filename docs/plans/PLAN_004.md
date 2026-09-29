@@ -35,7 +35,7 @@ and unstaged changes.
       patch naming; update project documentation.
 - [x] Run formatting, full tests, build, vet, diff checks, and archive smoke
       verification; fix any failures.
-- [ ] Commit and push the change, publish the next patch release, and verify
+- [x] Commit and push the change, publish the next patch release, and verify
       GitHub Actions and release assets.
 
 ## Implementation Order
