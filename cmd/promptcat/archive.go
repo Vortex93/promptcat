@@ -39,7 +39,7 @@ var defaultArchivePatterns = []string{
 	"**.dart", "**.cs", "**.php", "**.rb", "**.swift", "**.ex", "**.exs",
 	"**.json", "**.yaml", "**.yml", "**.toml", "**.xml", "**.ini", "**.sql",
 	"**.proto", "**.graphql", "**.tf", "**.sh", "**.bash", "**.zsh",
-	"**.lua", "**.scala", "**.groovy", "**.zig", "**.fs", "**.fsx",
+	"**.lua", "**.gd", "**.tscn", "**.scala", "**.groovy", "**.zig", "**.fs", "**.fsx",
 	"**.clj", "**.cljs", "**.cljc", "**.pl", "**.pm", "**.r",
 }
 

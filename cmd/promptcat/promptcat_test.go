@@ -120,7 +120,11 @@ func TestParseArgsArchivePatterns(t *testing.T) {
 }
 
 func TestDefaultArchivePatternsCoverSupportedFiles(t *testing.T) {
-	for _, extension := range []string{"js", "mjs", "jsx", "ts", "tsx", "py", "go", "rs", "css", "scss", "html", "vue", "svelte", "c", "h", "cpp", "hpp", "java", "kt", "dart", "cs", "php", "rb", "swift", "ex", "json", "yaml", "toml", "xml", "ini", "sql", "proto", "graphql", "tf", "sh", "bash", "zsh"} {
+	for _, extension := range []string{
+		"js", "mjs", "jsx", "ts", "tsx", "py", "go", "rs", "css", "scss", "html", "vue", "svelte",
+		"c", "h", "cpp", "hpp", "java", "kt", "dart", "cs", "php", "rb", "swift", "ex", "gd", "tscn",
+		"json", "yaml", "toml", "xml", "ini", "sql", "proto", "graphql", "tf", "sh", "bash", "zsh",
+	} {
 		pattern := "**." + extension
 		found := false
 		for _, defaultPattern := range defaultArchivePatterns {
