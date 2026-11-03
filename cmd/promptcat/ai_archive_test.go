@@ -114,17 +114,8 @@ func TestApplyArchiveDefaultsForAI(t *testing.T) {
 	if !opts.ignoredDirs[".agentpack"] {
 		t.Fatal("AI archives should ignore .agentpack by default")
 	}
-	for _, want := range []string{"**.md", "**/go.mod", "**/package.json", "**/Cargo.toml", "**/pyproject.toml", "**/Dockerfile", "**/Makefile"} {
-		found := false
-		for _, pattern := range opts.archivePatterns {
-			if pattern == want {
-				found = true
-				break
-			}
-		}
-		if !found {
-			t.Errorf("AI archive patterns missing %q", want)
-		}
+	if len(opts.archivePatterns) != 1 || opts.archivePatterns[0] != "**" {
+		t.Errorf("AI archive patterns = %#v, want all files", opts.archivePatterns)
 	}
 }
 
@@ -156,7 +147,8 @@ func TestCollectAIRepositoriesAcrossSiblingRepositories(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	repositories, err := collectAIRepositories(root, files)
+	context, err := collectAIRepositories(root, files)
+	repositories := context.records
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -204,7 +196,7 @@ func TestDiscoverAIRepositoryRootsIncludesSelectedRootAndWorktrees(t *testing.T)
 		t.Fatalf("create linked worktree: %v\n%s", err, output)
 	}
 
-	repositories, err := discoverAIRepositoryRoots(root)
+	repositories, err := discoverAIRepositoryRoots(root, []string{"main.go", "linked/main.go"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -259,7 +251,8 @@ func TestWriteAIRepositoryPatchesIncludesCommitsAndFilteredWorktree(t *testing.T
 		t.Fatal(err)
 	}
 
-	repositories, err := collectAIRepositories(root, []string{"included.go"})
+	context, err := collectAIRepositories(root, []string{"included.go"})
+	repositories := context.records
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -267,7 +260,7 @@ func TestWriteAIRepositoryPatchesIncludesCommitsAndFilteredWorktree(t *testing.T
 		t.Fatalf("repositories = %#v, want only the selected root repository", repositories)
 	}
 	packDir := t.TempDir()
-	patches, paths, err := writeAIRepositoryPatches(root, []string{"included.go"}, repositories, packDir)
+	patches, paths, err := writeAIRepositoryPatches(context, packDir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -337,7 +330,7 @@ func TestWriteAIRepositoryPatchesIncludesCommitsAndFilteredWorktree(t *testing.T
 			inputs:          []string{root},
 		}
 		applyArchiveDefaults(&opts)
-		if err := runArchive(opts, io.Discard); err != nil {
+		if err := runArchive(opts, io.Discard, io.Discard); err != nil {
 			t.Fatalf("create AI archive with patches: %v", err)
 		}
 		archivePath := filepath.Join(root, "result.tar.zst")
@@ -414,7 +407,8 @@ func TestWriteAIRepositoryPatchesPlacesNestedRepositoryUnderRepoPath(t *testing.
 	runTestAIGit(t, repositoryRoot, "-c", "user.name=Promptcat Test", "-c", "user.email=promptcat-test@example.invalid", "commit", "-q", "-m", "nested feature")
 	commit := runTestAIGit(t, repositoryRoot, "rev-parse", "HEAD")
 
-	repositories, err := collectAIRepositories(archiveRoot, []string{"nested/module.go"})
+	context, err := collectAIRepositories(archiveRoot, []string{"nested/module.go"})
+	repositories := context.records
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -422,7 +416,7 @@ func TestWriteAIRepositoryPatchesPlacesNestedRepositoryUnderRepoPath(t *testing.
 		t.Fatalf("repositories = %#v, want nested repository", repositories)
 	}
 	packDir := t.TempDir()
-	patches, _, err := writeAIRepositoryPatches(archiveRoot, []string{"nested/module.go"}, repositories, packDir)
+	patches, _, err := writeAIRepositoryPatches(context, packDir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -463,4 +457,29 @@ func runTestAIGit(t *testing.T, root string, args ...string) string {
 		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, output)
 	}
 	return strings.TrimSpace(string(output))
+}
+
+func TestCollectAIRepositoriesOnlyIncludesSelectedPaths(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is required")
+	}
+	root := t.TempDir()
+	included := filepath.Join(root, "included")
+	ignored := filepath.Join(root, "ignored")
+	initTestAIRepository(t, included, "main.go")
+	initTestAIRepository(t, ignored, "private.go")
+
+	context, err := collectAIRepositories(root, []string{"included/main.go"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(context.roots) != 1 || context.roots[0].path != "included" {
+		t.Fatalf("discovered excluded repository: %#v", context.roots)
+	}
+	if len(context.records) != 1 || context.records[0].Path != "included" {
+		t.Fatalf("unexpected selected repository metadata: %#v", context.records)
+	}
+	if len(context.filesByRepository[included]) != 1 || context.filesByRepository[ignored] != nil {
+		t.Fatalf("incorrect repository file ownership: %#v", context.filesByRepository)
+	}
 }

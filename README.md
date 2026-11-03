@@ -25,6 +25,7 @@ package main
 - Skip binary files automatically by extension and content detection
 - Output relative paths by default or absolute paths with `--fullpath`
 - Create deterministic TAR + Zstandard archives with `promptcat archive`
+- Export original files plus indexed navigation in a ZIP with `promptcat archive --chatgpt`
 - Copy normal Promptcat output to the system clipboard with `promptcat clipboard`
 
 ## Installation
@@ -92,6 +93,16 @@ cd promptcat
 go test ./...
 ```
 
+On macOS and Linux, install this checkout using Bash and Go:
+
+```bash
+./install.sh
+```
+
+The script runs `go install ./cmd/promptcat`, matching `mise run install`. It
+honors `GOBIN` (or defaults to `$(go env GOPATH)/bin`) and works from any working
+directory. Add the installation directory to your `PATH` if needed.
+
 Build the binary locally into `bin/`:
 
 macOS and Linux:
@@ -150,12 +161,17 @@ Archive source files in the current folder:
 promptcat archive
 ```
 
-The default archive patterns cover JavaScript, TypeScript, Python, Go, Rust, CSS/SCSS, JSX/TSX, HTML, Vue, Svelte, C/C++, Java/Kotlin, Dart, C#, PHP, Ruby, Swift, Elixir, Godot GDScript (`.gd`) and scene (`.tscn`) files, JSON/YAML/TOML/XML/INI, SQL, Protocol Buffers, GraphQL, Terraform, and shell files. Archives skip common dependency, generated, cache, temporary, and VCS directories by default, including `.git`, `node_modules`, `vendor`, `dist`, `build`, `target`, `coverage`, `.next`, `.nuxt`, `.svelte-kit`, `.cache`, `.gradle`, `.idea`, `tmp`, `temp`, and `logs`. Files larger than 1 MiB are also skipped by default to avoid pulling large data files into the archive. By default, matching files are formatted using Promptcat’s normal `<<<FILE: ...>>>` text format and stored as `export.txt` inside `archive.tar.zst`; use `--files` to store them as separate archive entries instead. The archive uses Zstandard level 3 and is replaced when rerunning the command. Add patterns with `--include` or replace the defaults with `--pattern`; use `--max-size` to change the per-file limit:
+All archive formats select readable UTF-8 text regardless of filename or extension. They skip common dependency, generated, cache, temporary, and VCS directories, including `.git`, `node_modules`, `vendor`, `dist`, `build`, `target`, and `coverage`; they also skip symlinks, Git-ignored files, sensitive filenames and private-key content, media (including SVG), archives, binary content, and files over 1 MiB by default. Inside Git repositories, Git's normal rules apply: tracked files are not ignored, nested repositories use their own rules, and Git must be installed. Outside repositories, nested `.gitignore` files are matched without Git, including directory rules and negation; matching starts at the selected archive folder.
+
+These checks are best-effort, not secret detection or redaction: review source files **and Git patches** before sharing. Some text is not UTF-8 and will be skipped. Use `--explain` to see the first reason each path was skipped; ignored directories are reported once without listing their contents.
+
+By default, files are formatted as `export.txt` inside `archive.tar.zst`; use `--files` to store them separately. The archive uses Zstandard level 3 and is replaced when rerunning the command. `--pattern` restricts the selection; `--include` adds patterns to that restriction (without `--pattern`, all names are already candidates). Neither option bypasses safety filters. Use `--max-size` to change the per-file limit:
 
 ```bash
 promptcat archive --include=**.json,**.yaml
 promptcat archive --pattern=**.js,**.ts --output=source.tar.zst
 promptcat archive --max-size=10MB
+promptcat pack . --explain
 promptcat archive --ai --output=source.tar.zst
 promptcat archive --exclude-repo=apps/legacy --exclude-repo=vendor/tool
 ```
@@ -164,18 +180,117 @@ Use `--exclude-repo=PATH` to omit a repository folder and everything beneath it 
 
 `--ai` adds a lightweight `.promptcat/` navigator and project metadata. The metadata lists each Git repository found under the selected folder (including linked worktrees) with its archive-relative path, branch/commit, changes to included files, and patch paths. Under `.promptcat/patches/`, root-repository patches go in `root/` and nested repositories go under `repo/<repo-path>/`. Each contains one `<commit-hash>.patch` per commit ahead of `origin/HEAD` (falling back to the configured upstream when the remote default branch is unavailable), plus `worktree.patch` for staged and unstaged tracked-file edits. Patch contents are restricted to files included in the archive; untracked files are included as source files but not repeated in the patch. Multiple repositories stay together in one archive. The included Python tool builds symbol and relationship indexes when used, so creating the archive does not need to analyze every source file up front. It works with both formatted (`export.txt`) and `--files` archive layouts.
 
+### ChatGPT source-review preset
+
+For a ChatGPT conversation with Python/file-extraction tools, use:
+
+```bash
+promptcat pack .
+# Optional: choose the ZIP name.
+promptcat pack . --output=project.zip
+# Equivalent existing command:
+promptcat archive --chatgpt --output=project.zip
+# Optional: also copy the ZIP as a file object to your clipboard.
+promptcat archive --chatgpt --clipboard
+```
+
+`pack [folder]` is a shortcut for `archive --chatgpt`. The folder defaults to the
+current directory. It supports the same archive options, including `--include`,
+`--pattern`, `--max-size`, `--ignore-dir`, `--exclude-repo`, and `--clipboard`.
+
+After scanning and filtering, pack shows one progress bar while processing source
+files, then reports the file count, skipped paths, archive size, duration, and
+destination on stderr. The bar appears only when both stdout and stderr are
+interactive terminals; redirected output contains only the plain summary unless
+details are requested. `NO_COLOR` disables colors. `--verbose` lists included and
+skipped paths; `--explain` lists skip reasons only. Pruned directories count as
+one skipped path, not all their files.
+
+`--chatgpt` implies `--ai` and `--files`, defaults to `archive.zip`, and requires a
+`.zip` output path. It uses Go's standard-library ZIP writer, so creating or
+extracting this format does not need `tar` or `zstd`. TAR/Zstandard workflows
+use the same file selection rules but keep their output formats.
+
+The default archive selection includes Caddyfiles and environment templates such as
+`public.env.example` and `vpn.env.sample`, but not live `.env` or `public.env`
+files. Review all selected files for secrets before sharing an archive.
+
+The ZIP contains the selected source files at their original relative paths,
+without concatenation, added line numbers, or rewritten line endings. It also has:
+
+- `START_HERE.md`: a selective-reading workflow and snapshot limitations.
+- `.promptcat/files.json`: paths, language/role hints, line counts, sizes, SHA-256
+  hashes of archived bytes, selection rules, and reasons for skipped candidates.
+- The existing `.promptcat/project.json`, Python navigator, and scoped Git patches.
+
+After attaching the ZIP, a useful request is:
+
+> Extract the archive and read `START_HERE.md`. Investigate [your task].
+> Read relevant source, imports, and tests; do not dump the whole repository.
+> Return a unified patch against the included source files.
+
+With an indexed ZIP, the navigator lists paths without loading source contents;
+`read` loads only the requested file, and prefix-filtered `search` reads only
+matching paths. Plain-text search releases each file after scanning it to limit
+memory usage; semantic relationship searches may still scan many files. The
+inventory takes precedence even when a real source file is named `export.txt`.
+
+```bash
+python .promptcat/tools.py files --limit 50 --offset 0
+python .promptcat/tools.py files auth --json
+python .promptcat/tools.py search "createUser" src/ --limit 20
+python .promptcat/tools.py read src/auth.ts 1 120
+```
+
+`files` and `map` support `--offset` pagination. A default `read` shows at most 80
+lines and 16,000 output characters. Explicit line ranges, `--source-lines N`, and
+`--max-chars N` can expand those bounds; long search lines are marked previews.
+Continuation/truncation notices go to stderr, leaving JSON stdout parseable.
+
+ChatGPT ZIP exports follow symbolic links by default, including targets outside
+the selected folder, while keeping the link's original relative path. Linked
+files are stored as regular files. Directory cycles and broken links are skipped
+with warnings; directory exclusions and size limits still apply. Review linked
+targets before sharing an archive, since they may contain private files.
+
+The preset keeps existing patterns, directory exclusions, `--exclude-repo`, and the
+1 MiB default per-file limit. It records oversized, binary, and non-UTF-8 matching
+files as skipped rather than silently decoding or altering them. Ignored folders
+and unmatched paths are described by selection rules, not individually enumerated.
+Unreadable selected sources fail the export. Each validated source is written
+directly to the temporary ZIP without a staged disk copy; only generated
+metadata is staged. A failed ZIP write leaves an existing destination intact.
+Source reading is per-file, not an atomic repository snapshot. Git metadata and
+patches cover only included source paths. Git repos without commits still export
+source files, but cannot provide commit history or HEAD-based patches.
+
+A ZIP upload does **not** guarantee automatic indexing, full-context loading, or
+better model accuracy. Available file tools vary by ChatGPT setup. Without archive
+extraction tools, use a focused text export or upload the relevant files directly.
+Review source **and Git patches** before sharing: this is not a secret-redaction
+tool, and patches can contain historical data. Do not apply included historical
+patches over the already-current source snapshot.
+
 Create the archive and copy the generated `.tar.zst` file to the system clipboard as a file:
 
 ```bash
 promptcat archive --clipboard
 ```
 
-Copy Promptcat output directly to the system clipboard. With no inputs, it uses the same source-file defaults, exclusions, and size limit as `archive`:
+Copy Promptcat output directly to the system clipboard. Folder inputs are scanned
+recursively using the same source-file defaults, directory exclusions, and 1 MiB
+size limit as `archive`. With no inputs, the folder is the current directory:
 
 ```bash
 promptcat clipboard
+promptcat clipboard .
+promptcat clipboard src
 promptcat clipboard README.md "cmd/**/*.go"
 ```
+
+Files, globs, and folders can be combined. `--include` and `--exclude` filter
+extensions; `--ignore-dir` adds directory exclusions and `--max-size` changes the
+size limit. Clipboard exports keep the existing policy of skipping symbolic links.
 
 On Linux, Promptcat uses `wl-copy`, `xclip`, or `xsel`; macOS uses `pbcopy`, and Windows uses `clip`.
 
@@ -224,8 +339,9 @@ Directories passed directly are skipped.
 | `--max-size=1MB` | Set the maximum archive file size; defaults to 1 MiB for archives |
 | `--files` | Store matching files separately instead of generating `export.txt` |
 | `--ai` | Add the lightweight AI navigation tool and project metadata |
+| `--chatgpt` | ZIP preset: original files, AI navigator, file inventory, and reading guide |
 | `--exclude-repo=PATH` | Exclude a repository folder and its contents (repeatable; relative to the archive folder) |
-| `--clipboard` | Also copy the generated archive file to the clipboard; cannot be combined with `--files` |
+| `--clipboard` | Also copy the generated archive file to the clipboard; `--files` requires `--chatgpt` when copying |
 | `autocomplete [shell]` | Print completion for Bash, Fish, Zsh, or PowerShell |
 | `autocomplete install [shell]` | Install completion, detecting the current shell when omitted |
 | `--exclude=json,lock` | Exclude these extensions |

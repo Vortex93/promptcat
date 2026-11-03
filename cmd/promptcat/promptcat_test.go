@@ -60,7 +60,7 @@ func TestParseArgsArchivePatterns(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := append(append([]string(nil), defaultArchivePatterns...), "**.json", "**.yaml")
+	want := []string{"**", "**.json", "**.yaml"}
 	if !reflect.DeepEqual(opts.archivePatterns, want) {
 		t.Fatalf("archivePatterns = %#v, want %#v", opts.archivePatterns, want)
 	}
@@ -168,26 +168,6 @@ func TestExpandInputsPrunesExcludedRepositoryFolder(t *testing.T) {
 	}
 }
 
-func TestDefaultArchivePatternsCoverSupportedFiles(t *testing.T) {
-	for _, extension := range []string{
-		"js", "mjs", "jsx", "ts", "tsx", "py", "go", "rs", "css", "scss", "html", "vue", "svelte",
-		"c", "h", "cpp", "hpp", "java", "kt", "dart", "cs", "php", "rb", "swift", "ex", "gd", "tscn",
-		"json", "yaml", "toml", "xml", "ini", "sql", "proto", "graphql", "tf", "sh", "bash", "zsh",
-	} {
-		pattern := "**." + extension
-		found := false
-		for _, defaultPattern := range defaultArchivePatterns {
-			if defaultPattern == pattern {
-				found = true
-				break
-			}
-		}
-		if !found {
-			t.Errorf("default archive patterns do not include %s", pattern)
-		}
-	}
-}
-
 func TestParseArgsArchiveIncludesDefaultIgnoredDirs(t *testing.T) {
 	opts, err := parseArgs([]string{"archive", "--ignore-dir=custom-cache"})
 	if err != nil {
@@ -249,8 +229,8 @@ func TestClipboardDefaultsUseArchiveSelection(t *testing.T) {
 	if !opts.ignoredDirs["node_modules"] || !opts.ignoredDirs[".git"] {
 		t.Fatalf("clipboard ignored directories = %#v", opts.ignoredDirs)
 	}
-	if len(opts.archivePatterns) != len(defaultArchivePatterns) {
-		t.Fatalf("clipboard patterns = %d, want %d", len(opts.archivePatterns), len(defaultArchivePatterns))
+	if !reflect.DeepEqual(opts.archivePatterns, []string{"**"}) {
+		t.Fatalf("clipboard patterns = %#v, want all files", opts.archivePatterns)
 	}
 }
 

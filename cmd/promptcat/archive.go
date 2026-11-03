@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"sort"
 	"strings"
 )
 
@@ -19,28 +18,6 @@ var defaultArchiveIgnoredDirs = []string{
 	"dist", "build", "out", "target", "coverage", ".storybook", "storybook-static",
 	".next", ".nuxt", ".svelte-kit", ".astro", ".cache", ".turbo", ".pytest_cache",
 	".mypy_cache", ".ruff_cache", ".tox", ".nox", ".pixi", ".gradle", ".idea", "tmp", "temp", "logs",
-}
-
-var aiArchiveContextPatterns = []string{
-	"**.md",
-	"**/go.mod", "**/go.sum", "**/go.work", "**/go.work.sum",
-	"**/package.json", "**/package-lock.json", "**/pnpm-lock.yaml", "**/yarn.lock", "**/bun.lock", "**/bun.lockb",
-	"**/Cargo.toml", "**/Cargo.lock",
-	"**/pyproject.toml", "**/requirements.txt", "**/requirements-dev.txt", "**/Pipfile", "**/Pipfile.lock", "**/poetry.lock",
-	"**/Dockerfile", "**/Dockerfile.*", "**/docker-compose.yml", "**/docker-compose.yaml", "**/compose.yml", "**/compose.yaml",
-	"**/Makefile", "**/Taskfile.yml", "**/Taskfile.yaml",
-	"**/.env.example", "**/.env.sample",
-}
-
-var defaultArchivePatterns = []string{
-	"**.js", "**.ts", "**.py", "**.go", "**.rs", "**.css", "**.scss",
-	"**.mjs", "**.cjs", "**.jsx", "**.tsx", "**.html", "**.vue", "**.svelte",
-	"**.c", "**.h", "**.cc", "**.cpp", "**.hpp", "**.java", "**.kt", "**.kts",
-	"**.dart", "**.cs", "**.php", "**.rb", "**.swift", "**.ex", "**.exs",
-	"**.json", "**.yaml", "**.yml", "**.toml", "**.xml", "**.ini", "**.sql",
-	"**.proto", "**.graphql", "**.tf", "**.sh", "**.bash", "**.zsh",
-	"**.lua", "**.gd", "**.tscn", "**.scala", "**.groovy", "**.zig", "**.fs", "**.fsx",
-	"**.clj", "**.cljs", "**.cljc", "**.pl", "**.pm", "**.r",
 }
 
 func applyArchiveDefaults(opts *options) {
@@ -56,14 +33,16 @@ func applyArchiveDefaults(opts *options) {
 	}
 	opts.ignoredDirs = archiveIgnoredDirs
 	if len(opts.archivePatterns) == 0 {
-		opts.archivePatterns = append([]string(nil), defaultArchivePatterns...)
-		if opts.archiveAI {
-			opts.archivePatterns = append(opts.archivePatterns, aiArchiveContextPatterns...)
-		}
+		opts.archivePatterns = []string{"**"}
 	}
 }
 
-func runArchive(opts options, stderr io.Writer) error {
+func runArchive(opts options, stdout, stderr io.Writer) error {
+	var progress *packProgress
+	if opts.archiveChatGPT {
+		progress = newPackProgress(stdout, stderr, opts.archiveExplain || opts.archiveVerbose)
+		defer progress.fail()
+	}
 	root := "."
 	if len(opts.inputs) == 1 {
 		root = opts.inputs[0]
@@ -80,51 +59,33 @@ func runArchive(opts options, stderr io.Writer) error {
 		return fmt.Errorf("resolve archive folder: %w", err)
 	}
 	outputPath := opts.archiveOutput
+	if outputPath == "~" || strings.HasPrefix(outputPath, "~/") || strings.HasPrefix(outputPath, "~\\") {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return fmt.Errorf("resolve archive output home directory: %w", err)
+		}
+		outputPath = filepath.Join(home, strings.TrimLeft(outputPath[1:], "/\\"))
+	}
 	if !filepath.IsAbs(outputPath) {
 		outputPath = filepath.Join(root, outputPath)
 	}
 	outputPath = filepath.Clean(outputPath)
 
-	inputs := make([]string, 0, len(opts.archivePatterns))
-	for _, pattern := range opts.archivePatterns {
-		inputs = append(inputs, filepath.Join(root, filepath.FromSlash(pattern)))
-	}
-	excludedRepoPaths := make([]string, 0, len(opts.archiveExcludeRepos))
-	for _, repoPath := range opts.archiveExcludeRepos {
-		excludedRepoPaths = append(excludedRepoPaths, filepath.Join(root, filepath.FromSlash(repoPath)))
-	}
-	paths, err := expandInputsWithExcludedPaths(inputs, nil, opts.ignoredDirs, excludedRepoPaths)
+	files, skipped, err := selectArchiveFiles(root, outputPath, opts, stderr)
 	if err != nil {
-		return fmt.Errorf("expand archive patterns: %w", err)
+		return err
 	}
-
-	files := make([]string, 0, len(paths))
-	seen := make(map[string]bool, len(paths))
-	for _, path := range paths {
-		info, statErr := os.Lstat(path)
-		if statErr != nil || info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
-			continue
-		}
-		if exceedsMaxSize(info.Size(), opts.maxSize) {
-			fmt.Fprintf(stderr, "Skipping (too large): %s\n", path)
-			continue
-		}
-		if filepath.Clean(path) == outputPath {
-			continue
-		}
-		relative, relErr := filepath.Rel(root, path)
-		if relErr != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
-			continue
-		}
-		relative = filepath.Clean(relative)
-		if !seen[relative] {
-			seen[relative] = true
-			files = append(files, relative)
-		}
-	}
-	sort.Strings(files)
 	if len(files) == 0 {
 		return errors.New("archive found no matching files")
+	}
+
+	if opts.archiveChatGPT {
+		return runChatGPTArchive(opts, root, outputPath, files, skipped, stderr, progress)
+	}
+	if opts.archiveVerbose {
+		for _, file := range files {
+			fmt.Fprintf(stderr, "Included: %s\n", filepath.ToSlash(file))
+		}
 	}
 
 	if opts.archiveFiles && !opts.archiveAI {

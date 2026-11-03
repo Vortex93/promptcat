@@ -116,13 +116,13 @@ func autocompleteInstallPath(shell string) (string, error) {
 const bashAutocomplete = `# promptcat bash completion
 _promptcat() {
     local cur=${COMP_WORDS[COMP_CWORD]}
-    local commands="auto archive update autocomplete clipboard"
-    local options="--help --version --upgrade --max-size --fullpath --include --pattern --output --files --clipboard --ai --exclude --ignore-dir --exclude-repo"
+    local commands="auto archive pack update autocomplete clipboard"
+    local options="--help --version --upgrade --max-size --fullpath --include --pattern --output --files --clipboard --ai --chatgpt --explain --verbose --exclude --ignore-dir --exclude-repo"
     if [[ ${COMP_CWORD} -eq 1 ]]; then
         COMPREPLY=($(compgen -W "${commands} ${options}" -- "${cur}"))
     elif [[ ${COMP_WORDS[1]} == autocomplete && ${COMP_CWORD} -eq 2 ]]; then
         COMPREPLY=($(compgen -W "install bash fish zsh powershell" -- "${cur}"))
-    elif [[ ${COMP_WORDS[1]} == archive && ${COMP_CWORD} -eq 2 ]]; then
+    elif [[ (${COMP_WORDS[1]} == archive || ${COMP_WORDS[1]} == pack) && ${COMP_CWORD} -eq 2 ]]; then
         COMPREPLY=($(compgen -W "${options}" -- "${cur}"))
     elif [[ ${cur} == -* ]]; then
         COMPREPLY=($(compgen -W "${options}" -- "${cur}"))
@@ -135,28 +135,31 @@ complete -F _promptcat promptcat
 
 const fishAutocomplete = `# promptcat fish completion
 complete -c promptcat -f
-complete -c promptcat -n '__fish_use_subcommand' -a 'auto archive update autocomplete clipboard' -d 'Promptcat command'
+complete -c promptcat -n '__fish_use_subcommand' -a 'auto archive pack update autocomplete clipboard' -d 'Promptcat command'
 complete -c promptcat -n '__fish_seen_subcommand_from autocomplete' -a 'install bash fish zsh powershell' -d 'Completion target'
 complete -c promptcat -n '__fish_use_subcommand' -l help -s h -d 'Show help'
 complete -c promptcat -n '__fish_use_subcommand' -l version -s v -d 'Show version'
 complete -c promptcat -n '__fish_use_subcommand' -l upgrade -d 'Legacy alias for update'
-complete -c promptcat -n '__fish_seen_subcommand_from archive' -l include -r -d 'Add archive patterns'
-complete -c promptcat -n '__fish_seen_subcommand_from archive' -l pattern -r -d 'Replace archive patterns'
-complete -c promptcat -n '__fish_seen_subcommand_from archive' -l output -r -d 'Archive output path'
-complete -c promptcat -n '__fish_seen_subcommand_from archive' -l files -d 'Store files separately'
-complete -c promptcat -n '__fish_seen_subcommand_from archive' -l clipboard -d 'Copy archive file to clipboard'
-complete -c promptcat -n '__fish_seen_subcommand_from archive' -l ai -d 'Add AI navigation pack'
-complete -c promptcat -n '__fish_seen_subcommand_from archive' -l max-size -r -d 'Maximum file size'
-complete -c promptcat -n '__fish_seen_subcommand_from archive' -l ignore-dir -r -d 'Ignored directory'
-complete -c promptcat -n '__fish_seen_subcommand_from archive' -l exclude-repo -r -d 'Exclude repository folder'
-complete -c promptcat -n '__fish_seen_subcommand_from archive' -a '(__fish_complete_path)'
+complete -c promptcat -n '__fish_seen_subcommand_from archive pack' -l include -r -d 'Add archive patterns'
+complete -c promptcat -n '__fish_seen_subcommand_from archive pack' -l pattern -r -d 'Replace archive patterns'
+complete -c promptcat -n '__fish_seen_subcommand_from archive pack' -l output -r -d 'Archive output path'
+complete -c promptcat -n '__fish_seen_subcommand_from archive pack' -l files -d 'Store files separately'
+complete -c promptcat -n '__fish_seen_subcommand_from archive pack' -l clipboard -d 'Copy archive file to clipboard'
+complete -c promptcat -n '__fish_seen_subcommand_from archive pack' -l ai -d 'Add AI navigation pack'
+complete -c promptcat -n '__fish_seen_subcommand_from archive pack' -l chatgpt -d 'ZIP with source files and indexed AI navigation'
+complete -c promptcat -n '__fish_seen_subcommand_from archive pack' -l explain -d 'Explain skipped paths'
+complete -c promptcat -n '__fish_seen_subcommand_from archive pack' -l verbose -d 'List included and skipped paths'
+complete -c promptcat -n '__fish_seen_subcommand_from archive pack' -l max-size -r -d 'Maximum file size'
+complete -c promptcat -n '__fish_seen_subcommand_from archive pack' -l ignore-dir -r -d 'Ignored directory'
+complete -c promptcat -n '__fish_seen_subcommand_from archive pack' -l exclude-repo -r -d 'Exclude repository folder'
+complete -c promptcat -n '__fish_seen_subcommand_from archive pack' -a '(__fish_complete_path)'
 `
 
 const zshAutocomplete = `#compdef promptcat
 
 _promptcat() {
     _arguments \\
-        '1:command:(auto archive update autocomplete clipboard)' \\
+        '1:command:(auto archive pack update autocomplete clipboard)' \\
         '--help[Show help]' \\
         '--version[Show version]' \\
         '--upgrade[Legacy alias for update]' \\
@@ -167,6 +170,9 @@ _promptcat() {
         '--output=[Archive output path]' \\
         '--files[Store archive files separately]' \\
         '--clipboard[Copy archive file to clipboard]' \\
+        '--chatgpt[ZIP with source files and indexed AI navigation]' \\
+        '--explain[Explain skipped paths]' \\
+        '--verbose[List included and skipped paths]' \\
         '--ai[Add AI navigation pack]' \\
         '--exclude=[Exclude extensions]' \\
         '--ignore-dir=[Ignore directory]' \\
@@ -179,8 +185,8 @@ _promptcat "$@"
 
 const powershellAutocomplete = `Register-ArgumentCompleter -Native -CommandName promptcat -ScriptBlock {
     param($wordToComplete, $commandAst, $cursorPosition)
-    $commands = @('auto', 'archive', 'update', 'autocomplete', 'clipboard')
-    $options = @('--help', '--version', '--upgrade', '--max-size', '--fullpath', '--include', '--pattern', '--output', '--files', '--clipboard', '--ai', '--exclude', '--ignore-dir', '--exclude-repo')
+    $commands = @('auto', 'archive', 'pack', 'update', 'autocomplete', 'clipboard')
+    $options = @('--help', '--version', '--upgrade', '--max-size', '--fullpath', '--include', '--pattern', '--output', '--files', '--clipboard', '--ai', '--chatgpt', '--explain', '--verbose', '--exclude', '--ignore-dir', '--exclude-repo')
     $tokens = $commandAst.CommandElements | ForEach-Object { $_.ToString() }
     $candidates = if ($tokens.Count -le 1) { $commands + $options } else { $options }
     $candidates | Where-Object { $_ -like "$wordToComplete*" } | ForEach-Object {

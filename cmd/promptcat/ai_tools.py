@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import ast, difflib, hashlib, json, re, sys
-from pathlib import Path, PurePosixPath
+from collections.abc import Mapping
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 PACK = Path(__file__).resolve().parent
 ROOT = PACK.parent
@@ -86,25 +87,87 @@ def parse_export():
     p = ROOT / "export.txt"
     if not p.exists(): return {}
     out, current, buf = {}, None, []
-    for raw in p.open("r", encoding="utf-8", errors="replace"):
-        line = raw.rstrip("\r\n")
-        if current is None:
-            if line.startswith("<<<FILE: ") and line.endswith(">>>"):
-                q = line[len("<<<FILE: "):-3]
-                try: current = norm(ast.literal_eval(q))
-                except Exception: current = norm(q.strip('"'))
-                buf = []
-            continue
-        if line == "<<<END FILE>>>":
-            out[current] = "\n".join(buf); current = None; buf = []; continue
-        if line.startswith("\\<<<FILE: ") or line == "\\<<<END FILE>>>": line = line[1:]
-        buf.append(line)
+    with p.open("r", encoding="utf-8", errors="replace") as source:
+        for raw in source:
+            line = raw.rstrip("\r\n")
+            if current is None:
+                if line.startswith("<<<FILE: ") and line.endswith(">>>"):
+                    q = line[len("<<<FILE: "):-3]
+                    try: current = norm(ast.literal_eval(q))
+                    except Exception: current = norm(q.strip('"'))
+                    buf = []
+                continue
+            if line == "<<<END FILE>>>":
+                out[current] = "\n".join(buf); current = None; buf = []; continue
+            if line.startswith("\\<<<FILE: ") or line == "\\<<<END FILE>>>": line = line[1:]
+            buf.append(line)
     return out
+
+
+
+class IndexedSources(Mapping):
+    """An inventory-backed mapping: membership/listing never reads source bytes."""
+
+    def __init__(self, index):
+        if not isinstance(index, dict) or index.get("schemaVersion") != 1 or index.get("layout") != "files":
+            raise SystemExit("unsupported .promptcat/files.json schema or layout")
+        rows = index.get("files")
+        if not isinstance(rows, list):
+            raise SystemExit("invalid .promptcat/files.json: files must be a list")
+        self.records = {}
+        self.cache = {}
+        for row in rows:
+            path = row.get("path") if isinstance(row, dict) else None
+            if not isinstance(path, str) or not path or path != norm(path):
+                raise SystemExit("invalid source path in .promptcat/files.json")
+            parts = PurePosixPath(path).parts
+            if (PurePosixPath(path).is_absolute() or PureWindowsPath(path).drive
+                    or ".." in parts or str(PurePosixPath(path)) != path or path == "."
+                    or parts[0].lower() == ".promptcat" or any(c in path for c in "\x00\r\n")):
+                raise SystemExit(f"unsafe source path in .promptcat/files.json: {path!r}")
+            if path in self.records:
+                raise SystemExit(f"duplicate source path in .promptcat/files.json: {path!r}")
+            if not isinstance(row.get("lines"), int) or row["lines"] < 0:
+                raise SystemExit(f"invalid line count in .promptcat/files.json: {path!r}")
+            self.records[path] = row
+
+    def __iter__(self):
+        return iter(self.records)
+
+    def __len__(self):
+        return len(self.records)
+
+    def __contains__(self, path):
+        return path in self.records
+
+    def __getitem__(self, path):
+        if path not in self.records:
+            raise KeyError(path)
+        if path not in self.cache:
+            target = ROOT / path
+            for candidate in (target, *target.parents):
+                if candidate == ROOT:
+                    break
+                if candidate.is_symlink():
+                    raise SystemExit(f"refusing source symlink: {path}")
+            try:
+                with target.open("r", encoding="utf-8", newline="") as source:
+                    self.cache[path] = source.read()
+            except (OSError, UnicodeError) as error:
+                raise SystemExit(f"cannot read archived source {path}: {error}") from error
+        return self.cache[path]
 
 
 def sources():
     global SRC
     if SRC is not None: return SRC
+    index = PACK / "files.json"
+    if index.exists():
+        try:
+            SRC = IndexedSources(json.loads(index.read_text(encoding="utf-8")))
+        except (OSError, ValueError) as error:
+            raise SystemExit(f"cannot read .promptcat/files.json: {error}") from error
+        return SRC
     SRC = parse_export()
     if SRC: return SRC
     SRC = {}
@@ -140,8 +203,9 @@ def role(path):
 
 def code_files(query=None):
     q = query.lower() if query else None
-    for p, text in sources().items():
+    for p in sources():
         if language(p) not in CODE or role(p) == "generated": continue
+        text = read(p)
         if q and q not in text.lower() and q not in p.lower(): continue
         yield p, language(p), role(p), text
 
@@ -327,7 +391,12 @@ def callees(q,limit=80):
 
 
 def file_rows(q=""):
-    q=q.lower(); rows=[{"path":p,"language":language(p),"role":role(p),"lines":len(t.splitlines())} for p,t in sources().items() if not q or q in p.lower()]
+    q = q.lower()
+    source = sources()
+    if isinstance(source, IndexedSources):
+        rows = [dict(row) for p, row in source.records.items() if not q or q in p.lower()]
+    else:
+        rows = [{"path":p,"language":language(p),"role":role(p),"lines":len(t.splitlines())} for p,t in source.items() if not q or q in p.lower()]
     return sorted(rows,key=lambda r:(r["role"]=="generated",r["path"]))
 def compact(r): return f"{qname(r)}\t{r['kind']}\t{r['path']}:{r['line']}-{r['endLine']}"
 def emit(rows,json_mode=False,fmt=None):
@@ -345,12 +414,58 @@ def clean_args(args):
     for i,a in enumerate(args):
         if skip: skip=False; continue
         if a in {"--json"}: continue
-        if a in {"--limit","--source-lines"}:
+        if a in {"--limit","--source-lines","--offset","--max-chars"}:
             skip=True; continue
         out.append(a)
     return out
 
-def limits(args): return bool(opt(args,"json",False)), int(opt(args,"limit",50)), int(opt(args,"source-lines",80))
+def int_option(args, name, default, minimum=1):
+    value = opt(args, name, default)
+    try:
+        if isinstance(value, bool): raise ValueError()
+        number = int(value)
+        if number < minimum: raise ValueError()
+    except (ValueError, TypeError):
+        raise SystemExit(f"--{name} must be an integer >= {minimum}")
+    return number
+
+
+def limits(args):
+    return bool(opt(args,"json",False)), int_option(args,"limit",50), int_option(args,"source-lines",80)
+
+
+def page(rows, limit, offset):
+    end = min(len(rows), offset + limit)
+    if end < len(rows):
+        print(f"Showing {offset + 1}-{end} of {len(rows)} files; continue with --offset {end} --limit {limit}.", file=sys.stderr)
+    elif offset >= len(rows) and offset:
+        print(f"Offset {offset} is beyond {len(rows)} matching files.", file=sys.stderr)
+    return rows[offset:end]
+
+
+def emit_source(lines, start, end, max_chars):
+    remaining = max_chars
+    for i in range(start - 1, end):
+        rendered = f"{i+1:6} | {lines[i]}\n"
+        if len(rendered) > remaining:
+            print(rendered[:remaining], end="")
+            if remaining: print()
+            print(f"Source output truncated at line {i+1} by --max-chars {max_chars}; increase --max-chars to inspect the full range.", file=sys.stderr)
+            return False
+        print(rendered, end="")
+        remaining -= len(rendered)
+    return True
+
+
+def search_preview(line, query):
+    text = line.strip()
+    if len(text) <= 400:
+        return text
+    position = text.lower().find(query)
+    start = max(0, position - 120)
+    end = min(len(text), start + 400)
+    return ("... " if start else "") + text[start:end] + " [line preview truncated]"
+
 
 def changed(): return project().get("changes") or []
 def changed_symbols():
@@ -364,28 +479,47 @@ def changed_symbols():
 def usage():
     print("""Promptcat lazy navigator
 commands: files map symbol outline imports dependents read search refs callers callees tests context impact changed changed-symbols git
-common flags: --json --limit N""")
+common flags: --json --limit N; files/map: --offset N; read/context: --source-lines N --max-chars N""")
 
 def main():
     if len(sys.argv)<2: usage(); raise SystemExit(2)
-    cmd=sys.argv[1]; raw=sys.argv[2:]; jm,limit,source_lines=limits(raw); a=clean_args(raw)
-    if cmd=="files": emit(file_rows(a[0] if a else "")[:limit],jm,lambda r:f"{r['path']}\t{r['language']}\t{r['role']}\t{r['lines']}L")
+    cmd=sys.argv[1]; raw=sys.argv[2:]; jm,limit,source_lines=limits(raw); offset=int_option(raw,"offset",0,0); max_chars=int_option(raw,"max-chars",16000); a=clean_args(raw)
+    if cmd=="files": emit(page(file_rows(a[0] if a else ""),limit,offset),jm,lambda r:f"{r['path']}\t{r['language']}\t{r['role']}\t{r['lines']}L")
     elif cmd=="symbol" and a: emit(resolve(a[0],limit),jm,compact)
     elif cmd=="outline" and a: emit(symbols(a[0])[:limit],jm,compact)
     elif cmd=="imports" and a: emit(imports(a[0])[:limit],jm,lambda r:f"{r['target']}\t{r['resolvedPath'] or '-'}\t{r['path']}:{r['line']}")
     elif cmd=="dependents" and a:
         target=norm(a[0]); rows=[r for p,_,_,_ in code_files() for r in imports(p) if r["resolvedPath"]==target or r["target"]==a[0]]; emit(rows[:limit],jm,lambda r:f"{r['path']}:{r['line']}\t{r['target']}")
     elif cmd=="read" and a:
-        lines=read(a[0]).splitlines(); start=max(1,int(a[1]) if len(a)>1 else 1); end=min(len(lines),int(a[2]) if len(a)>2 else len(lines))
-        for i in range(start-1,end): print(f"{i+1:6} | {lines[i]}")
+        lines = read(a[0]).splitlines()
+        try:
+            start = int(a[1]) if len(a) > 1 else 1
+            requested_end = int(a[2]) if len(a) > 2 else start + source_lines - 1
+        except ValueError:
+            raise SystemExit("read line numbers must be integers")
+        if start < 1 or requested_end < start:
+            raise SystemExit("read requires 1 <= start <= end")
+        if start > max(1, len(lines)):
+            raise SystemExit(f"start line {start} is beyond {len(lines)} lines")
+        end = min(len(lines), requested_end)
+        complete = emit_source(lines, start, end, max_chars)
+        if complete and end < len(lines):
+            print(f"More lines available ({len(lines)} total); continue with read {json.dumps(a[0])} {end + 1} {min(len(lines), end + source_lines)}.", file=sys.stderr)
     elif cmd=="search" and a:
         q=a[0].lower(); prefix=norm(a[1]) if len(a)>1 else ""; count=0
-        for p,text in sources().items():
+        source = sources()
+        for p in source:
             if prefix and not p.startswith(prefix): continue
-            for i,line in enumerate(text.splitlines(),1):
-                if q in line.lower():
-                    print(f"{p}:{i}:{line.strip()}"); count+=1
-                    if count>=limit: return
+            try:
+                for i,line in enumerate(read(p).splitlines(),1):
+                    if q in line.lower():
+                        print(f"{p}:{i}:{search_preview(line, q)}"); count+=1
+                        if count>=limit:
+                            print(f"Stopped at --limit {limit}; more matches may exist. Narrow the query/prefix or increase --limit.", file=sys.stderr)
+                            return
+            finally:
+                # Plain search visits each file once. Keep only metadata, not all text.
+                if isinstance(source, IndexedSources): source.cache.pop(p, None)
     elif cmd=="refs" and a: emit(refs(a[0],limit),jm,lambda r:f"{r['kind']}\t{r['path']}:{r['line']}:{r['column']}\t{r.get('caller') or '-'}")
     elif cmd=="callers" and a: emit(callers(a[0],limit),jm,lambda r:f"{r['caller']}\t{r['path']}:{r['line']}")
     elif cmd=="callees" and a: emit(callees(a[0],limit),jm,lambda r:f"{r['callee']}\t{r['path']}:{r['line']}")
@@ -394,7 +528,7 @@ def main():
     elif cmd=="changed-symbols": emit(changed_symbols()[:limit],jm,compact)
     elif cmd=="git": print(json.dumps(project().get("git") or {},ensure_ascii=False,indent=2 if jm else None))
     elif cmd=="map":
-        for r in file_rows(a[0] if a else "")[:limit]:
+        for r in page(file_rows(a[0] if a else ""),limit,offset):
             print(f"{r['path']} [{r['language']}] [{r['role']}]")
             if r["language"] in CODE and r["role"]!="generated":
                 for s in [x for x in symbols(r["path"]) if not x.get("parent")][:6]: print(f"  {s['kind']} {s['name']} @{s['line']}")
@@ -403,7 +537,7 @@ def main():
         if not targets: raise SystemExit(f"symbol not found: {a[0]}")
         for t in targets:
             print("SYMBOL",compact(t)); print("SOURCE"); lines=read(t["path"]).splitlines(); start=max(1,t["line"]-4); end=min(len(lines),t["endLine"]+4,t["line"]+source_lines)
-            for i in range(start-1,end): print(f"{i+1:6} | {lines[i]}")
+            emit_source(lines, start, end, max_chars)
             for title,rows,fmt in [("CALLERS",callers(t["id"],limit),lambda r:f"{r['caller']} {r['path']}:{r['line']}"),("CALLEES",callees(t["id"],limit),lambda r:f"{r['callee']} {r['path']}:{r['line']}"),("TESTS",tests(t["id"],limit),lambda r:f"{r['path']}:{r['line']} {r.get('caller') or ''}"),("IMPORTS",imports(t["path"])[:limit],lambda r:f"{r['target']} -> {r['resolvedPath'] or '-'}")]:
                 print(title); print("  (none)" if not rows else "\n".join("  "+fmt(r).rstrip() for r in rows))
             print()

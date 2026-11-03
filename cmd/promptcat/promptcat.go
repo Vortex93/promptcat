@@ -205,6 +205,9 @@ type options struct {
 	archiveFiles        bool
 	archiveClipboard    bool
 	archiveAI           bool
+	archiveChatGPT      bool
+	archiveExplain      bool
+	archiveVerbose      bool
 	clipboard           bool
 	upgrade             bool
 	fullPath            bool
@@ -223,7 +226,10 @@ type options struct {
 func parseArgs(args []string) (options, error) {
 	var opts options
 	for _, arg := range args {
-		if arg == "archive" {
+		if arg == "--" {
+			break
+		}
+		if arg == "archive" || arg == "pack" {
 			opts.archive = true
 			break
 		}
@@ -246,6 +252,11 @@ func parseArgs(args []string) (options, error) {
 
 		case arg == "archive":
 			opts.archive = true
+
+		// Pack uses the existing ChatGPT preset, including its defaults and validation.
+		case arg == "pack":
+			opts.archive = true
+			opts.archiveChatGPT = true
 
 		case arg == "update":
 			opts.upgrade = true
@@ -307,6 +318,15 @@ func parseArgs(args []string) (options, error) {
 
 		case arg == "--ai":
 			opts.archiveAI = true
+
+		case arg == "--chatgpt":
+			opts.archiveChatGPT = true
+
+		case arg == "--explain":
+			opts.archiveExplain = true
+
+		case arg == "--verbose":
+			opts.archiveVerbose = true
 
 		case arg == "--exclude":
 			i++
@@ -438,8 +458,16 @@ func parseArgs(args []string) (options, error) {
 		}
 	}
 
+	if opts.archiveChatGPT {
+		if !opts.archive {
+			return opts, flagError("--chatgpt requires the archive command")
+		}
+		opts.archiveAI = true
+		opts.archiveFiles = true
+	}
+
 	if opts.autocomplete {
-		if opts.auto || opts.archive || opts.archiveAI || opts.upgrade || opts.fullPath || opts.maxSize > 0 || opts.include != nil || opts.exclude != nil || opts.ignoredDirs != nil || len(opts.inputs) > 0 || len(opts.excludePatterns) > 0 {
+		if opts.auto || opts.archive || opts.archiveAI || opts.archiveExplain || opts.archiveVerbose || opts.upgrade || opts.fullPath || opts.maxSize > 0 || opts.include != nil || opts.exclude != nil || opts.ignoredDirs != nil || len(opts.inputs) > 0 || len(opts.excludePatterns) > 0 {
 			return opts, flagError("autocomplete cannot be combined with other options or inputs")
 		}
 		return opts, nil
@@ -447,6 +475,12 @@ func parseArgs(args []string) (options, error) {
 
 	if opts.archiveAI && !opts.archive {
 		return opts, flagError("--ai requires the archive command")
+	}
+	if opts.archiveExplain && !opts.archive {
+		return opts, flagError("--explain requires the archive command")
+	}
+	if opts.archiveVerbose && !opts.archive {
+		return opts, flagError("--verbose requires the archive command")
 	}
 	if len(opts.archiveExcludeRepos) > 0 && !opts.archive {
 		return opts, flagError("--exclude-repo requires the archive command")
@@ -464,11 +498,17 @@ func parseArgs(args []string) (options, error) {
 				return opts, err
 			}
 		}
-		if opts.archiveFiles && opts.archiveClipboard {
+		if opts.archiveFiles && opts.archiveClipboard && !opts.archiveChatGPT {
 			return opts, flagError("archive --clipboard cannot be combined with --files")
 		}
 		if opts.archiveOutput == "" {
 			opts.archiveOutput = "archive.tar.zst"
+			if opts.archiveChatGPT {
+				opts.archiveOutput = "archive.zip"
+			}
+		}
+		if opts.archiveChatGPT && !strings.EqualFold(filepath.Ext(opts.archiveOutput), ".zip") {
+			return opts, flagError("archive --chatgpt requires a .zip output path")
 		}
 		applyArchiveDefaults(&opts)
 		opts.archivePatterns = append(opts.archivePatterns, opts.archiveIncludes...)
@@ -548,9 +588,11 @@ Usage:
   promptcat [options] <files...>
   promptcat auto [options]
   promptcat archive [options] [folder]
+  promptcat pack [options] [folder]
   promptcat update
   promptcat autocomplete [install] [shell]
   promptcat clipboard [options] <files...>
+  promptcat clipboard [options] [folder]
 
 Options:
   --help, -h            Show help
@@ -564,6 +606,10 @@ Options:
                          Archive output path
   --files                Store matching files separately instead of export.txt
   --ai                   Add a lazy AI navigation pack to the archive
+  --chatgpt              ZIP of source files, file index, and AI guide (archive only)
+  --explain              Report the first reason each archive path is skipped
+  --verbose              List included and skipped archive paths
+  pack                   Shortcut for archive --chatgpt (defaults to archive.zip)
   --exclude-repo=PATH    Exclude a repository folder and its contents (repeatable)
   autocomplete install  Install shell completion (bash, fish, zsh, powershell)
   clipboard              Copy normal formatted output to the system clipboard
@@ -582,15 +628,18 @@ Examples:
   promptcat --include=go,md --ignore-dir=.git,node_modules "**/*"
   promptcat auto
   promptcat archive
+  promptcat pack .
   promptcat update
   promptcat archive --include=**.json src
   promptcat archive --pattern=**.js,**.ts --output=src.tar.zst
   promptcat archive --files
   promptcat archive --ai
+  promptcat archive --chatgpt --output=project.zip
   promptcat archive --exclude-repo=apps/legacy
   promptcat autocomplete bash
   promptcat autocomplete install fish
   promptcat clipboard README.md
+  promptcat clipboard .
 `
 }
 
@@ -1249,7 +1298,7 @@ func run(cliArgs []string, stdout, stderr io.Writer) error {
 		return nil
 	}
 	if opts.archive {
-		return runArchive(opts, stderr)
+		return runArchive(opts, stdout, stderr)
 	}
 	if opts.autocomplete {
 		return runAutocomplete(opts, stdout, stderr)
@@ -1261,9 +1310,8 @@ func run(cliArgs []string, stdout, stderr io.Writer) error {
 		if err != nil {
 			return fmt.Errorf("Auto detection failed: %w", err)
 		}
-	} else if opts.clipboard && len(opts.inputs) == 0 {
-		applyArchiveDefaults(&opts)
-		args, err = expandInputs(opts.archivePatterns, nil, opts.ignoredDirs)
+	} else if opts.clipboard {
+		args, err = expandClipboardInputs(&opts, stderr)
 		if err != nil {
 			return fmt.Errorf("Failed to expand clipboard inputs: %w", err)
 		}
@@ -1287,7 +1335,7 @@ func run(cliArgs []string, stdout, stderr io.Writer) error {
 	tasks := make([]fileTask, 0, len(args))
 
 	for _, input := range args {
-		if isIgnored(input, opts.ignoredDirs) {
+		if !opts.clipboard && isIgnored(input, opts.ignoredDirs) {
 			fmt.Fprintf(stderr, "Skipping (ignored dir): %s\n", input)
 			continue
 		}
