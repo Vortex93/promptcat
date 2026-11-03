@@ -188,6 +188,8 @@ For a ChatGPT conversation with Python/file-extraction tools, use:
 promptcat pack .
 # Optional: choose the ZIP name.
 promptcat pack . --output=project.zip
+# Or put <project-name>.zip in an existing directory.
+promptcat pack . --output=~/Downloads/
 # Equivalent existing command:
 promptcat archive --chatgpt --output=project.zip
 # Optional: also copy the ZIP as a file object to your clipboard.
@@ -207,7 +209,10 @@ skipped paths; `--explain` lists skip reasons only. Pruned directories count as
 one skipped path, not all their files.
 
 `--chatgpt` implies `--ai` and `--files`, defaults to `archive.zip`, and requires a
-`.zip` output path. It uses Go's standard-library ZIP writer, so creating or
+`.zip` output path or an existing output directory. A directory uses the selected
+folder's name for the ZIP; relative outputs are resolved inside that folder. A
+successful export replaces an existing output file; a failed ZIP export leaves it
+unchanged. It uses Go's standard-library ZIP writer, so creating or
 extracting this format does not need `tar` or `zstd`. TAR/Zstandard workflows
 use the same file selection rules but keep their output formats.
 

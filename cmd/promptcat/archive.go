@@ -37,6 +37,61 @@ func applyArchiveDefaults(opts *options) {
 	}
 }
 
+// resolveArchiveOutput resolves paths relative to the archive root. ZIP output
+// directories must already exist and use the project name; explicit filenames
+// retain their spelling and ZIP replacement remains atomic in writeZIP.
+func resolveArchiveOutput(root, output string, zipOutput bool) (string, error) {
+	if output == "" {
+		output = "archive.tar.zst"
+		if zipOutput {
+			output = "archive.zip"
+		}
+	}
+	if output == "~" || strings.HasPrefix(output, "~/") || strings.HasPrefix(output, "~\\") {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("resolve archive output home directory: %w", err)
+		}
+		output = filepath.Join(home, strings.TrimLeft(output[1:], "/\\"))
+	}
+	if !filepath.IsAbs(output) {
+		output = filepath.Join(root, output)
+	}
+	output = filepath.Clean(output)
+	if !zipOutput {
+		return output, nil
+	}
+	info, err := os.Stat(output)
+	if err != nil && !os.IsNotExist(err) {
+		return "", fmt.Errorf("inspect archive output: %w", err)
+	}
+	if err == nil && info.IsDir() {
+		projectName := filepath.Base(root)
+		if projectName == "." || projectName == string(filepath.Separator) || projectName == filepath.VolumeName(root) || projectName == filepath.VolumeName(root)+string(filepath.Separator) {
+			return "", errors.New("cannot derive an archive name from a filesystem root; provide a ZIP filename")
+		}
+		output = filepath.Join(output, projectName+".zip")
+	}
+	if !strings.EqualFold(filepath.Ext(output), ".zip") {
+		return "", flagError("archive --chatgpt output must be a .zip file or existing directory")
+	}
+	destination, err := os.Lstat(output)
+	if err != nil && !os.IsNotExist(err) {
+		return "", fmt.Errorf("inspect ZIP destination: %w", err)
+	}
+	if err == nil && !destination.Mode().IsRegular() {
+		return "", errors.New("ZIP output must be a regular file or an existing directory")
+	}
+	parent, err := os.Stat(filepath.Dir(output))
+	if err != nil {
+		return "", fmt.Errorf("inspect archive output directory: %w", err)
+	}
+	if !parent.IsDir() {
+		return "", errors.New("archive output parent is not a directory")
+	}
+	return output, nil
+}
+
 func runArchive(opts options, stdout, stderr io.Writer) error {
 	var progress *packProgress
 	if opts.archiveChatGPT {
@@ -58,18 +113,10 @@ func runArchive(opts options, stdout, stderr io.Writer) error {
 	if err != nil {
 		return fmt.Errorf("resolve archive folder: %w", err)
 	}
-	outputPath := opts.archiveOutput
-	if outputPath == "~" || strings.HasPrefix(outputPath, "~/") || strings.HasPrefix(outputPath, "~\\") {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return fmt.Errorf("resolve archive output home directory: %w", err)
-		}
-		outputPath = filepath.Join(home, strings.TrimLeft(outputPath[1:], "/\\"))
+	outputPath, err := resolveArchiveOutput(root, opts.archiveOutput, opts.archiveChatGPT)
+	if err != nil {
+		return err
 	}
-	if !filepath.IsAbs(outputPath) {
-		outputPath = filepath.Join(root, outputPath)
-	}
-	outputPath = filepath.Clean(outputPath)
 
 	files, skipped, err := selectArchiveFiles(root, outputPath, opts, stderr)
 	if err != nil {

@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"io"
+	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -25,7 +27,6 @@ func TestParseArgsPack(t *testing.T) {
 		}
 	}
 	for _, args := range [][]string{
-		{"pack", "--output=review.tar.zst"},
 		{"pack", "one", "two"},
 		{"pack", "auto"},
 		{"pack", "update"},
@@ -48,6 +49,90 @@ func TestParseArgsPack(t *testing.T) {
 		if err != nil || !strings.Contains(script, "pack") {
 			t.Errorf("missing pack completion for %s: %v", shell, err)
 		}
+	}
+}
+
+func TestPackOutputPaths(t *testing.T) {
+	workspace := t.TempDir()
+	root := filepath.Join(workspace, "webmail")
+	frontend := filepath.Join(root, "frontend")
+	downloads := filepath.Join(workspace, "Downloads")
+	for _, directory := range []string{frontend, downloads, filepath.Join(root, "outdir")} {
+		if err := os.MkdirAll(directory, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeAutoFiles(t, root, map[string]string{"main.go": "package main\n", "frontend/app.ts": "export const app = 1\n"})
+	t.Setenv("HOME", workspace)
+	t.Chdir(root)
+	for _, test := range []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"default", []string{"pack", "."}, filepath.Join(root, "archive.zip")},
+		{"relative directory", []string{"pack", ".", "--output=outdir"}, filepath.Join(root, "outdir", "webmail.zip")},
+		{"relative root directory", []string{"pack", ".", "--output=."}, filepath.Join(root, "webmail.zip")},
+		{"absolute directory", []string{"pack", ".", "--output=" + downloads}, filepath.Join(downloads, "webmail.zip")},
+		{"chatgpt directory", []string{"archive", "--chatgpt", ".", "--output=" + downloads}, filepath.Join(downloads, "webmail.zip")},
+		{"home directory", []string{"pack", "./frontend", "--output=~/Downloads/"}, filepath.Join(downloads, "frontend.zip")},
+		{"absolute filename", []string{"pack", ".", "--output=" + filepath.Join(downloads, "custom.ZIP")}, filepath.Join(downloads, "custom.ZIP")},
+		{"relative filename", []string{"pack", "./frontend", "--output=custom.zip"}, filepath.Join(frontend, "custom.zip")},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if err := run(test.args, io.Discard, io.Discard); err != nil {
+				t.Fatal(err)
+			}
+			entries := readTestZIP(t, test.want)
+			if len(entries["START_HERE.md"]) == 0 {
+				t.Fatal("missing archive guide")
+			}
+		})
+	}
+}
+
+func TestPackOutputValidationAndOverwrite(t *testing.T) {
+	root := t.TempDir()
+	writeAutoFiles(t, root, map[string]string{"main.go": "package main\n"})
+	output := filepath.Join(root, filepath.Base(root)+".zip")
+	if err := os.WriteFile(output, []byte("old archive"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := run([]string{"pack", root, "--output=" + root}, io.Discard, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	entries := readTestZIP(t, output)
+	if _, ok := entries[filepath.Base(output)]; ok {
+		t.Fatal("archive included its previous output")
+	}
+	if len(entries["main.go"]) == 0 {
+		t.Fatal("existing archive was not replaced")
+	}
+
+	for _, path := range []string{filepath.Join(root, "missing"), filepath.Join(root, "missing.zip", "child.zip"), filepath.Join(root, "wrong.tar")} {
+		if err := run([]string{"pack", root, "--output=" + path}, io.Discard, io.Discard); err == nil {
+			t.Errorf("accepted invalid output %s", path)
+		}
+	}
+	link := filepath.Join(root, "link.zip")
+	if err := os.Symlink(output, link); err == nil {
+		if err := run([]string{"pack", root, "--output=" + link}, io.Discard, io.Discard); err == nil {
+			t.Error("accepted symlink as ZIP output")
+		}
+	}
+	if _, err := resolveArchiveOutput(string(filepath.Separator), root, true); err == nil {
+		t.Error("accepted filesystem root without an explicit filename")
+	}
+	before, err := os.ReadFile(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writeZIP(output, func(*zipEntries) error { return io.ErrUnexpectedEOF }); err == nil {
+		t.Fatal("expected failed ZIP creation")
+	}
+	after, err := os.ReadFile(output)
+	if err != nil || !bytes.Equal(before, after) {
+		t.Fatalf("failed export changed the previous ZIP: %v", err)
 	}
 }
 

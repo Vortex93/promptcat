@@ -35,7 +35,6 @@ func TestParseArgsChatGPT(t *testing.T) {
 	for _, args := range [][]string{
 		{"--chatgpt"}, {"auto", "--chatgpt"}, {"update", "--chatgpt"},
 		{"autocomplete", "bash", "--chatgpt"},
-		{"archive", "--chatgpt", "--output=review.tar.zst"},
 		{"archive", "--chatgpt", "auto"},
 		{"archive", "--files", "--clipboard"},
 	} {

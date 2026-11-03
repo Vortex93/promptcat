@@ -507,9 +507,6 @@ func parseArgs(args []string) (options, error) {
 				opts.archiveOutput = "archive.zip"
 			}
 		}
-		if opts.archiveChatGPT && !strings.EqualFold(filepath.Ext(opts.archiveOutput), ".zip") {
-			return opts, flagError("archive --chatgpt requires a .zip output path")
-		}
 		applyArchiveDefaults(&opts)
 		opts.archivePatterns = append(opts.archivePatterns, opts.archiveIncludes...)
 		for _, pattern := range opts.archivePatterns {
